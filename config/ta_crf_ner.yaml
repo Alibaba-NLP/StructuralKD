@@ -1,0 +1,51 @@
+ModelFinetuner:
+  distill_mode: true
+  down_sample_amount: 30000
+  optimizer: SGD
+  sentence_level_batch: true
+anneal_factor: 0.5
+atis:
+  Corpus: ATIS-EN:ATIS-TR:ATIS-HI
+chunk:
+  Corpus: CONLL_03:CONLL_03_GERMAN
+embeddings:
+  FastCharacterEmbeddings:
+    char_cnn: true
+    char_embedding_dim: 25
+    hidden_size_char: 25
+  FastWordEmbeddings-0:
+    embeddings: ta
+    freeze: true
+interpolation: 0.5
+is_teacher_list: true
+model:
+  FastSequenceTagger:
+    crf_attention: false
+    distill_crf: false
+    distill_posterior: true
+    dropout: 0.0
+    hidden_size: 256
+    relearn_embeddings: true
+    sentence_loss: true
+    temperature: 1.0
+    use_crf: true
+model_name: word_char_charcnn_0.5anneal_300epoch_32batch_0.1lr_256hidden_ta_monolingual_crf_sentloss_distill_posterior_softmaxteacher_1temperature_10patience_fast_sentbatch_relearn_fasttext_freeze_mberttunedkd_30000downsample_nodev_panxpred_newteacher_panx_ner39
+ner:
+  Corpus: PANXPRED-TA
+  tag_dictionary: resources/taggers/ner_tags.pkl
+  teachers:
+    ? config_gen/multi-bert_10epoch_32batch_0.00005lr_10000lrrate_multilingual_nocrf_fast_relearn_sentbatch_sentloss_finetune_conlllang_nodev_panx_ner9.yaml
+    : PANXPRED-TA
+target_dir: resources/taggers/
+targets: ner
+teacher_annealing: true
+train:
+  learning_rate: 0.1
+  max_epochs: 300
+  mini_batch_size: 32
+  monitor_test: false
+  patience: 10
+  save_final_model: false
+  train_with_dev: false
+  true_reshuffle: false
+trainer: ModelFinetuner
