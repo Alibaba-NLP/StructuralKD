@@ -9,26 +9,26 @@ StructuralKD is a framework for training stronger and smaller models through kno
 - [Requirements](#requirements)
 - [Datasets](#datasets)
 - [Scenarios](#scenarios)
-  - [Teacher and Student Share the Same Factorization Form]
-    -[Linear-Chain CRF⇒Linear-ChainCRF]
+  - [Teacher and Student Share the Same Factorization Form](#teacher-and-student-share-the-same-factorization-form)
+    -[Linear-Chain CRF⇒Linear-ChainCRF](#linear-chain-crflinear-chaincrf)
       - [Training](#training)
-        - [Train Teacher Models](#train-teacher-models)
-        - [Train Student Models through KD](#train-student-models-through-KD)
-    - [Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling]
+        - [Teacher Models](#teacher-models)
+        - [Training Student Models](##training-student-models)
+    - [Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#graph-based-dependency-parsingdependency-parsing-as-sequence-labeling)
       - Coming Soon
-  - [Student Factorization Produces More Fine-grained Substructures than Teacher Factorization]
-    - [Linear-Chain CRF⇒MaxEnt]
+  - [Student Factorization Produces More Fine-grained Substructures than Teacher Factorization](#student-factorization-produces-more-fine-grained-substructures-than-teacher-factorization)
+    - [Linear-Chain CRF⇒MaxEnt](#linear-chain-crfmaxent)
       - [Training](#training)
-        - [Train Teacher Models](#train-teacher-models)
-        - [Train Student Models through KD](#train-student-models-through-KD)
-    -[Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling]
+        - [Teacher Models](#teacher-models-1)
+        - [Training Student Models](##training-student-models-1)
+    -[Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#second-order-dependency-parsingdependency-parsing-as-sequence-labeling)
       - Coming Soon
-  - [Teacher Factorization Produces More Fine-grained Substructures than Student Factorization]
-    - [MaxEnt⇒Linear-Chain CRF]
+  - [Teacher Factorization Produces More Fine-grained Substructures than Student Factorization](#teacher-factorization-produces-more-fine-grained-substructures-than-student-factorization)
+    - [MaxEnt⇒Linear-Chain CRF](#maxentlinear-chain-crf)
       - [Training](#training)
-        - [Train Teacher Models](#train-teacher-models)
-        - [Train Student Models through KD](#train-student-models-through-KD)
-  - [Factorization Forms From Teacher andStudent are Incompatible]
+        - [Teacher Model](#teacher-model)
+        - [Training Student Models](##training-student-models-2)
+  - [Factorization Forms From Teacher andStudent are Incompatible](#factorization-forms-from-teacher-and-student-are-incompatible)
     - Coming Soon
 - [Parse files](#parse-files)
 - [Config File](#Config-File)
