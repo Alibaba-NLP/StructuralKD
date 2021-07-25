@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="692d47e6-5ace-4664-a5c8-83fd13205b40" name="titanv" url="http://10.19.127.41">
+        <fileTransfer host="10.19.127.41" port="233" rootFolder="/home/jiazx/" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" />
+          </advancedOptions>
+          <option name="port" value="233" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
