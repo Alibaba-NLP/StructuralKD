@@ -1,8 +1,0 @@
-1	No	_	RB	RB	_	7	discourse	7:discourse	_
-2	,	_	,	,	_	7	punct	7:punct	_
-3	it	_	PRP	PRP	_	7	nsubj	7:nsubj	_
-4	was	_	VBD	VBD	_	7	cop	7:cop	_
-5	n't	_	RB	RB	_	7	neg	7:neg	_
-6	Black	_	NNP	NNP	_	7	nn	7:nn	_
-7	Monday	_	NNP	NNP	_	0	root	0:root	_
-8	.	_	.	.	_	7	punct	7:punct	_
