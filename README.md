@@ -78,7 +78,19 @@ python train_with_teacher.py --config config/es_crf_ner.yaml #Spanish
 
 #### Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling
 
-Coming Soon ...
+The code is aviable in the branch DepKD. We follow the biaffine parser to train the graph-based dependency parser. The teachers are available on [google drive](https://drive.google.com/drive/folders/1DFmz9KMJS6epm3TAMtL7PNG7IQV_JSAU?usp=sharing). Put these models in `resources/taggers`. 
+
+An alternative way is training the teacher models by yourself: 
+```bash
+python train_with_teacher.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_nocrf_fast_freeze_nodev_dependency30.yaml
+```
+
+##### Training Student Models
+
+Run:
+```bash
+python train_with_teacher.py --config config/ptb-dp_as_sl-1st.yaml
+```
 
 ---
 
@@ -104,7 +116,19 @@ python train_with_teacher.py --config config/es_maxent_ner.yaml #Spanish
 
 
 #### Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling
-Coming Soon ...
+The code is aviable in the branch DepKD. We follow our previous model to train the graph-based second-order dependency parser. The teachers are available on [google drive](https://drive.google.com/drive/folders/1DFmz9KMJS6epm3TAMtL7PNG7IQV_JSAU?usp=sharing). Put these models in `resources/taggers`. 
+
+An alternative way is training the teacher models by yourself: 
+```bash
+python train_with_teacher.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_2nd_nocrf_fast_freeze_nodev_dependency30.yaml
+```
+
+##### Training Student Models
+
+Run:
+```bash
+python train_with_teacher.py --config config/ptb-dp_as_sl-2nd.yaml
+```
 
 ---
 
