@@ -14,19 +14,19 @@ StructuralKD is a framework for training stronger and smaller models through kno
       - [Teacher Models](#teacher-models)
       - [Training Student Models](#training-student-models)
     - [Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#graph-based-dependency-parsingdependency-parsing-as-sequence-labeling)
-      - [Teacher Models]
-      - [Training Student Models]
-  - [Student Factorization Produces More Fine-grained Substructures than Teacher Factorization](#student-factorization-produces-more-fine-grained-substructures-than-teacher-factorization)
-    - [Linear-Chain CRF⇒MaxEnt](#linear-chain-crfmaxent)
       - [Teacher Models](#teacher-models-1)
       - [Training Student Models](#training-student-models-1)
+  - [Student Factorization Produces More Fine-grained Substructures than Teacher Factorization](#student-factorization-produces-more-fine-grained-substructures-than-teacher-factorization)
+    - [Linear-Chain CRF⇒MaxEnt](#linear-chain-crfmaxent)
+      - [Teacher Models](#teacher-models-2)
+      - [Training Student Models](#training-student-models-2)
     - [Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#second-order-dependency-parsingdependency-parsing-as-sequence-labeling)
-      - [Teacher Models]
-      - [Training Student Models]
+      - [Teacher Models](#teacher-models-3)
+      - [Training Student Models](#training-student-models-3)
   - [Teacher Factorization Produces More Fine-grained Substructures than Student Factorization](#teacher-factorization-produces-more-fine-grained-substructures-than-student-factorization)
     - [MaxEnt⇒Linear-Chain CRF](#maxentlinear-chain-crf)
       - [Teacher Model](#teacher-model)
-      - [Training Student Models](#training-student-models-2)
+      - [Training Student Models](#training-student-models-4)
   - [Factorization Forms From Teacher andStudent are Incompatible](#factorization-forms-from-teacher-and-student-are-incompatible)
     - Coming Soon
 - [Parse files](#parse-files)
