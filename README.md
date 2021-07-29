@@ -14,13 +14,15 @@ StructuralKD is a framework for training stronger and smaller models through kno
       - [Teacher Models](#teacher-models)
       - [Training Student Models](#training-student-models)
     - [Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#graph-based-dependency-parsingdependency-parsing-as-sequence-labeling)
-      - Coming Soon
+      - [Teacher Models]
+      - [Training Student Models]
   - [Student Factorization Produces More Fine-grained Substructures than Teacher Factorization](#student-factorization-produces-more-fine-grained-substructures-than-teacher-factorization)
     - [Linear-Chain CRF⇒MaxEnt](#linear-chain-crfmaxent)
       - [Teacher Models](#teacher-models-1)
       - [Training Student Models](#training-student-models-1)
     - [Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling](#second-order-dependency-parsingdependency-parsing-as-sequence-labeling)
-      - Coming Soon
+      - [Teacher Models]
+      - [Training Student Models]
   - [Teacher Factorization Produces More Fine-grained Substructures than Student Factorization](#teacher-factorization-produces-more-fine-grained-substructures-than-student-factorization)
     - [MaxEnt⇒Linear-Chain CRF](#maxentlinear-chain-crf)
       - [Teacher Model](#teacher-model)
@@ -78,6 +80,8 @@ python train_with_teacher.py --config config/es_crf_ner.yaml #Spanish
 
 #### Graph-based Dependency Parsing⇒Dependency Parsing as Sequence Labeling
 
+##### Teacher Models
+
 The code is aviable in the branch DepKD. We follow the biaffine parser to train the graph-based dependency parser. The teachers are available on [google drive](https://drive.google.com/drive/folders/1DFmz9KMJS6epm3TAMtL7PNG7IQV_JSAU?usp=sharing). Put these models in `resources/taggers`. 
 
 An alternative way is training the teacher models by yourself: 
@@ -116,6 +120,8 @@ python train_with_teacher.py --config config/es_maxent_ner.yaml #Spanish
 
 
 #### Second-Order Dependency Parsing⇒Dependency Parsing as Sequence Labeling
+
+##### Teacher Models
 The code is aviable in the branch DepKD. We follow our previous model to train the graph-based second-order dependency parser. The teachers are available on [google drive](https://drive.google.com/drive/folders/1DFmz9KMJS6epm3TAMtL7PNG7IQV_JSAU?usp=sharing). Put these models in `resources/taggers`. 
 
 An alternative way is training the teacher models by yourself: 
