@@ -37,7 +37,6 @@ class BiLSTM(nn.Module):
         if self.dropout > 0:
             s += f", dropout={self.dropout}"
         s += ')'
-
         return s
 
     def reset_parameters(self):

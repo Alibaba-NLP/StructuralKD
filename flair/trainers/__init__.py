@@ -1,5 +1,4 @@
 from .trainer import ModelTrainer
 from .distillation_trainer import ModelDistiller
 from .finetune_trainer import ModelFinetuner
-from .reinforcement_trainer import ReinforcementTrainer
-from .swaf_trainer import SWAFTrainer
+from .finetune_trainer_dp import ModelFinetuner_dp

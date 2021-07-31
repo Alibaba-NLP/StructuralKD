@@ -12,8 +12,6 @@ import torch.nn.functional as F
 import traceback
 import sys
 import os
-import numpy as np
-import h5py
 def get_corpus_lengths(train_data):
 	return [len(corpus) for corpus in train_data]
 
@@ -38,13 +36,6 @@ def blockPrint():
 def enablePrint():
 		sys.stdout = sys.__stdout__
 
-def count_parameters(model):
-	total_param = 0
-	for name,param in model.named_parameters():
-		num_param = np.prod(param.size())
-		# print(name,num_param)
-		total_param+=num_param
-	return total_param
 
 
 
@@ -85,7 +76,6 @@ class ModelDistiller(ModelTrainer):
 		self.model: flair.nn.Model = student
 		self.corpus: ListCorpus = corpus
 		self.distill_mode = distill_mode
-		self.sentence_level_batch = sentence_level_batch
 
 		if self.distill_mode:
 			self.corpus_teacher: ListCorpus = copy.deepcopy(corpus)
@@ -248,7 +238,7 @@ class ModelDistiller(ModelTrainer):
 		# prepare loss logging file and set up header
 		loss_txt = init_output_file(base_path, "loss.tsv")
 
-		# weight_extractor = WeightExtractor(base_path)
+		weight_extractor = WeightExtractor(base_path)
 
 		optimizer: torch.optim.Optimizer = self.optimizer(
 			self.model.parameters(), lr=learning_rate, **kwargs
@@ -317,17 +307,17 @@ class ModelDistiller(ModelTrainer):
 			for teacher in self.teachers:
 				del teacher
 			del self.teachers, self.corpus_teacher  
-			batch_loader=ColumnDataLoader(train_data,mini_batch_size,shuffle,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+			batch_loader=ColumnDataLoader(train_data,mini_batch_size,shuffle,use_bert=self.use_bert)
 		else:
-			batch_loader=ColumnDataLoader(ConcatDataset(train_data),mini_batch_size,shuffle,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+			batch_loader=ColumnDataLoader(ConcatDataset(train_data),mini_batch_size,shuffle,use_bert=self.use_bert)
 		batch_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 		if self.distill_mode:
 			if faster:
 				batch_loader=self.resort(batch_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior, is_token_att = self.model.token_level_attention)
 
-		dev_loader=ColumnDataLoader(list(self.corpus.dev),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+		dev_loader=ColumnDataLoader(list(self.corpus.dev),eval_mini_batch_size,use_bert=self.use_bert)
 		dev_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-		test_loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+		test_loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size,use_bert=self.use_bert)
 		test_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 		# if self.distill_mode:
 		#   batch_loader.expand_teacher_predictions()
@@ -445,10 +435,10 @@ class ModelDistiller(ModelTrainer):
 						total_sent=0
 						batch_time = 0
 						iteration = epoch * total_number_of_batches + batch_no
-						# if not param_selection_mode:
-						#   weight_extractor.extract_weights(
-						#       self.model.state_dict(), iteration
-						#   )
+						if not param_selection_mode:
+							weight_extractor.extract_weights(
+								self.model.state_dict(), iteration
+							)
 
 				train_loss /= seen_batches
 
@@ -528,7 +518,7 @@ class ModelDistiller(ModelTrainer):
 							log_line(log)
 							log.info('current corpus: '+subcorpus.name)
 							current_result, test_loss = self.model.evaluate(
-								ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch),
+								ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert),
 								out_path=base_path / f"{subcorpus.name}-test.tsv",
 								embeddings_storage_mode=embeddings_storage_mode,
 							)
@@ -539,7 +529,7 @@ class ModelDistiller(ModelTrainer):
 							log_line(log)
 							log.info('current corpus: '+self.corpus.targets[index])
 							current_result, test_loss = self.model.evaluate(
-								ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch),
+								ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert),
 								out_path=base_path / f"{self.corpus.targets[index]}-test.tsv",
 								embeddings_storage_mode=embeddings_storage_mode,
 							)
@@ -651,28 +641,6 @@ class ModelDistiller(ModelTrainer):
 			"train_loss_history": train_loss_history,
 			"dev_loss_history": dev_loss_history,
 		}
-
-	def assign_documents(self, data_list, doc_name, doc_sentence_dict, corpus_name, train_with_doc = False):
-		doc_idx = -1
-		for sentence in data_list:
-			if '-DOCSTART-' in sentence[0].text:
-				doc_idx+=1
-				doc_key='start'
-			else:
-				doc_key=corpus_name+doc_name+str(doc_idx)
-			if self.sentence_level_pretrained_data:
-				doc_idx+=1
-				doc_key=corpus_name+doc_name+str(doc_idx)
-			
-			if doc_key not in doc_sentence_dict:
-				doc_sentence_dict[doc_key]=[]
-			doc_sentence_dict[doc_key].append(sentence)
-			if train_with_doc:
-				sentence.doc_name = doc_key
-				sentence.doc = doc_sentence_dict[doc_key]
-				sentence.doc_pos = len(doc_sentence_dict[doc_key])-1
-		return doc_sentence_dict
-
 	@property
 	def interpolation(self):
 		try:
@@ -714,7 +682,7 @@ class ModelDistiller(ModelTrainer):
 				target = self.corpus.targets[index]
 				if target not in teacher.targets:
 					continue
-				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=True,use_bert=use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=True,use_bert=use_bert)
 				for batch in loader:
 					counter+=len(batch)
 					student_input, teacher_input = zip(*batch)
@@ -774,7 +742,7 @@ class ModelDistiller(ModelTrainer):
 				target = self.corpus.targets[index]
 				if target not in teacher.targets:
 					continue
-				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=True,use_bert=use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=True,use_bert=use_bert)
 				for batch in loader:
 					counter+=len(batch)
 					student_input, teacher_input = zip(*batch)
@@ -822,7 +790,7 @@ class ModelDistiller(ModelTrainer):
 						del logits
 					res_input+=student_input
 					# store_embeddings(teacher_input, "none")
-			teacher=teacher.to('cpu')   
+			teacher=teacher.to('cpu')	
 			# del teacher
 		log.info('Distilled '+str(counter)+' sentences')
 		res_input=[]
@@ -882,7 +850,7 @@ class ModelDistiller(ModelTrainer):
 							new_sentfeats.append(new_sentfeat)
 						
 						if is_posterior:
-								
+							    
 							post_val=post_vals[idx]
 							shape=[max_shape]+list(post_val.shape[1:])
 							new_posterior=torch.zeros(shape).type_as(post_val)
@@ -907,7 +875,7 @@ class ModelDistiller(ModelTrainer):
 		elif (base_path / "final-model.pt").exists():
 			self.model = self.model.load(base_path / "final-model.pt")
 			log.info("Testing using final model ...")
-		loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+		loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert)
 		loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 		XE=torch.zeros(len(range(min_k,max_k))).float().cuda()
 		weighted_XE=torch.zeros(len(range(min_k,max_k))).float().cuda()
@@ -962,7 +930,7 @@ class ModelDistiller(ModelTrainer):
 			# print('total_length: ',total_length)
 		
 	def final_test(
-		self, base_path: Path, eval_mini_batch_size: int, num_workers: int = 8, overall_test: bool = True, quiet_mode: bool = False, nocrf: bool = False, predict_posterior: bool = False, sort_data=False,
+		self, base_path: Path, eval_mini_batch_size: int, num_workers: int = 8, overall_test: bool = True, quiet_mode: bool = False, nocrf: bool = False, predict_posterior: bool = False
 	):
 
 		log_line(log)
@@ -983,7 +951,7 @@ class ModelDistiller(ModelTrainer):
 		if predict_posterior:
 			self.model.predict_posterior=True
 		if overall_test:
-			loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+			loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert)
 			loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 			test_results, test_loss = self.model.evaluate(
 				loader,
@@ -1003,7 +971,7 @@ class ModelDistiller(ModelTrainer):
 			for subcorpus in self.corpus.corpora:
 				log_line(log)
 				log.info('current corpus: '+subcorpus.name)
-				loader=ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert)
 				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 				current_result, test_loss = self.model.evaluate(
 					loader,
@@ -1020,7 +988,7 @@ class ModelDistiller(ModelTrainer):
 			for index,subcorpus in enumerate(self.corpus.test_list):
 				log_line(log)
 				log.info('current corpus: '+self.corpus.targets[index])
-				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert)
 				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 				current_result, test_loss = self.model.evaluate(
 					loader,
@@ -1075,7 +1043,7 @@ class ModelDistiller(ModelTrainer):
 		print('Batch Size: ', mini_batch_size)
 		step = 0
 		while step < iterations:
-			batch_loader=ColumnDataLoader(list(train_data),mini_batch_size,use_bert=self.use_bert, model = self.model, sentence_level_batch = self.sentence_level_batch)
+			batch_loader=ColumnDataLoader(list(train_data),mini_batch_size,use_bert=self.use_bert)            
 			# batch_loader = DataLoader(
 			#     train_data, batch_size=mini_batch_size, shuffle=True
 			# )
@@ -1133,97 +1101,3 @@ class ModelDistiller(ModelTrainer):
 		log_line(log)
 
 		return Path(learning_rate_tsv)
-	def gpu_friendly_assign_embedding(self,loaders, selection = None):
-		# pdb.set_trace()
-		# torch.cuda.empty_cache()
-		embedlist = sorted([(embedding.name, embedding) for embedding in self.model.embeddings.embeddings], key = lambda x: x[0])
-		# for embedding in self.model.embeddings.embeddings:
-		for idx, embedding_tuple in enumerate(embedlist):
-			embedding = embedding_tuple[1]
-			
-			if ('WordEmbeddings' != embedding.__class__.__name__ and 'FastWordEmbeddings' != embedding.__class__.__name__ and 'Char' not in embedding.__class__.__name__ and 'Lemma' not in embedding.__class__.__name__ and 'POS' not in embedding.__class__.__name__) and not (hasattr(embedding,'fine_tune') and embedding.fine_tune):
-				# pdb.set_trace()
-
-				log.info(f"{embedding.name} {count_parameters(embedding)}")
-				# 
-				if embedding.__class__.__name__ == 'TransformerWordEmbeddings':
-					log.info(f"{embedding.pooling_operation}")
-				if selection is not None:
-					if selection[idx] == 0:
-						log.info(f"{embedding.name} is not selected, Skipping")
-						continue
-				embedding.to(flair.device)
-				if 'elmo' in embedding.name:
-					# embedding.reset_elmo()
-					# continue
-					# pdb.set_trace()
-					embedding.ee.elmo_bilm.cuda(device=embedding.ee.cuda_device)
-					states=[x.to(flair.device) for x in embedding.ee.elmo_bilm._elmo_lstm._states]
-					embedding.ee.elmo_bilm._elmo_lstm._states = states
-					for idx in range(len(embedding.ee.elmo_bilm._elmo_lstm._states)):
-						embedding.ee.elmo_bilm._elmo_lstm._states[idx]=embedding.ee.elmo_bilm._elmo_lstm._states[idx].to(flair.device)
-				for loader in loaders:
-					for sentences in loader:
-						lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
-						longest_token_sequence_in_batch: int = max(lengths)
-						# if longest_token_sequence_in_batch>100:
-						#   pdb.set_trace()
-						embedding.embed(sentences)
-						store_embeddings(sentences, self.embeddings_storage_mode)
-				embedding=embedding.to('cpu')
-				if 'elmo' in embedding.name:
-					embedding.ee.elmo_bilm.to('cpu')
-			else:
-				embedding=embedding.to(flair.device)
-		# bug
-		if hasattr(self.model,'remove_x') and self.model.remove_x:
-			for loader in loaders:
-				loader_data=[]
-				for sentences in loader:
-					new_sentences=[]
-					for sentence in sentences:
-						gold_tags = [token.tags[self.model.tag_type].value for token in sentence]
-						gold_span = []
-						# pdb.set_trace()
-						for tag_id, tag in enumerate(gold_tags):
-							if tag != 'S-X':
-								gold_span.append(tag_id)
-						# pdb.set_trace()
-						# sentence=sentence[gold_span[0]:gold_span[-1]+1]
-						sentence.chunk_sentence(gold_span[0],gold_span[-1]+1)
-				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-		# torch.cuda.empty_cache()
-		log.info("Finished Embeddings Assignments")
-		return 
-	def assign_predicted_embeddings(self,doc_dict,embedding,file_name):
-		# torch.cuda.empty_cache()
-		lm_file = h5py.File(file_name, "r")
-		for key in doc_dict:
-			if key == 'start':
-				for i, sentence in enumerate(doc_dict[key]):
-					for token, token_idx in zip(sentence.tokens, range(len(sentence.tokens))):
-						word_embedding = torch.zeros(embedding.embedding_length).float()
-						word_embedding = torch.FloatTensor(word_embedding)
-
-						token.set_embedding(embedding.name, word_embedding)
-				continue
-			group = lm_file[key]
-			num_sentences = len(list(group.keys()))
-			sentences_emb = [group[str(i)][...] for i in range(num_sentences)]
-			try: 
-				assert len(doc_dict[key])==len(sentences_emb)
-			except:
-				pdb.set_trace()
-			for i, sentence in enumerate(doc_dict[key]):
-				for token, token_idx in zip(sentence.tokens, range(len(sentence.tokens))):
-					try:
-						word_embedding = sentences_emb[i][token_idx]
-						word_embedding = torch.from_numpy(word_embedding).view(-1)
-					except:
-						pdb.set_trace()
-
-					token.set_embedding(embedding.name, word_embedding)
-				store_embeddings([sentence], 'cpu')
-			# for idx, sentence in enumerate(doc_dict[key]):
-		log.info("Loaded predicted embeddings: "+file_name)
-		return 

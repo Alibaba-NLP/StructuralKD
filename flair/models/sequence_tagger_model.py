@@ -1,12 +1,15 @@
 import warnings
 import logging
 from pathlib import Path
+
 import torch.nn
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
 import torch.autograd as autograd
 import flair.nn
 import torch
+
+from functools import reduce
 
 from flair.data import Dictionary, Sentence, Token, Label
 from flair.datasets import DataLoader
@@ -24,16 +27,8 @@ import numpy as np
 import pdb
 import copy
 
-from flair.variational_inference import MFVI
+from ..variational_inference import MFVI
 import time
-import re
-import ast
-
-#--------------------------------------------------------------
-from flair.parser.modules import Biaffine
-#--------------------------------------------------------------
-from flair.loss_functions import *
-from flair.custom_data_loader import BatchedData
 
 log = logging.getLogger("flair")
 
@@ -65,7 +60,6 @@ def log_sum_exp_batch(vecs):
 	maxi = torch.max(vecs, 1)[0]
 	maxi_bc = maxi[:, None].repeat(1, vecs.shape[1])
 	recti_ = torch.log(torch.sum(torch.exp(vecs - maxi_bc), 1))
-	# pdb.set_trace()
 	return maxi + recti_
 
 def log_sum_exp_vb(vec, m_size):
@@ -95,7 +89,6 @@ def pad_tensors(tensor_list):
 	return template, lens_
 
 
-
 class SequenceTagger(flair.nn.Model):
 	def __init__(
 		self,
@@ -108,7 +101,7 @@ class SequenceTagger(flair.nn.Model):
 		use_rnn: bool = True,
 		use_cnn: bool = False,
 		rnn_layers: int = 1,
-		dropout: float = 0.0,
+		dropout: float = 0.5,
 		word_dropout: float = 0.05,
 		locked_dropout: float = 0.5,
 		train_initial_hidden_state: bool = False,
@@ -122,10 +115,11 @@ class SequenceTagger(flair.nn.Model):
 		token_level_attention: bool = False,
 		distill_with_gold: bool = False,
 		exp_score: bool = False,
+		distill_dp: bool = False,
+		#-----------------------------
 		distill_posterior: bool = False,
 		distill_prob: bool = False,
 		distill_emission: bool = False,
-		distill_exact: bool = False,
 		posterior_constraint: bool = False,
 		predict_posterior: bool = False,
 		use_language_vector: bool = False,
@@ -151,15 +145,6 @@ class SequenceTagger(flair.nn.Model):
 		relearn_size = -1,
 		embedding_selector = False,
 		new_drop: bool = False,
-		use_rl: bool = False,
-		use_embedding_masks: bool = False,
-		use_gumbel: bool = False,
-		embedding_attention: bool = False,
-		testing: bool = False,
-		remove_x: bool = False,
-		multi_view_training: bool = False,
-		calculate_l2_loss: bool = False,
-		l2_loss_only: bool = False,
 	):
 		"""
 		Initializes a SequenceTagger
@@ -196,8 +181,9 @@ class SequenceTagger(flair.nn.Model):
 		self.token_level_attention: bool = token_level_attention
 		self.distill_with_gold: bool = distill_with_gold
 		self.exp_score: bool = exp_score
+		self.distill_dp: bool = distill_dp
+		#-----------------------------
 		self.distill_posterior: bool = distill_posterior
-		self.distill_exact: bool = distill_exact
 		self.distill_prob: bool = distill_prob
 		self.distill_emission: bool = distill_emission
 		self.posterior_constraint: bool = posterior_constraint
@@ -230,10 +216,6 @@ class SequenceTagger(flair.nn.Model):
 		self.hidden_word = None
 		self.embedding_selector = embedding_selector
 		self.new_drop = new_drop
-		self.use_rl = use_rl
-		self.use_embedding_masks = use_embedding_masks
-		self.use_gumbel = use_gumbel
-		self.embedding_attention = embedding_attention
 
 		self.word_map = word_map
 		self.char_map = char_map
@@ -244,13 +226,6 @@ class SequenceTagger(flair.nn.Model):
 		self.use_locked_dropout: float = locked_dropout
 
 		self.pickle_module = pickle_module
-		self.remove_x = remove_x
-		self.multi_view_training = multi_view_training
-		self.calculate_l2_loss = calculate_l2_loss
-		self.l2_loss_only = l2_loss_only
-
-		
-		# pdb.set_trace()
 
 		# if dropout > 0.0:
 		#   self.dropout = torch.nn.Dropout(dropout)
@@ -260,7 +235,6 @@ class SequenceTagger(flair.nn.Model):
 
 		# if locked_dropout > 0.0:
 		#   self.locked_dropout = flair.nn.LockedDropout(locked_dropout)
-
 		if not self.new_drop:
 			if dropout > 0.0:
 			  self.dropout = torch.nn.Dropout(dropout)
@@ -290,28 +264,18 @@ class SequenceTagger(flair.nn.Model):
 					self.map_linears.append(torch.nn.Linear(embedding.embedding_length, 50))
 					rnn_input_dim+=50
 		# pdb.set_trace()
-		if (self.embedding_selector and not self.use_rl) or self.embedding_attention:
-			if use_gumbel:
-				self.selector = Parameter(
-						torch.zeros(len(self.embeddings.embeddings),2),
-						requires_grad=True,
-					)
-			else:
-				self.selector = Parameter(
-						torch.zeros(len(self.embeddings.embeddings)),
+		if self.embedding_selector:
+			self.selector = Parameter(
+						torch.randn(len(self.embeddings.embeddings),2),
 						requires_grad=True,
 					)
 		self.relearn_embeddings: bool = relearn_embeddings and not self.map_embeddings
-
-		#==============debug==============
-		# rnn_input_dim = rnn_input_dim*2
-		#==============debug==============
 
 		if self.relearn_embeddings:
 			if relearn_size == -1:
 				self.embedding2nn = torch.nn.Linear(rnn_input_dim, rnn_input_dim)
 			else:
-				self.embedding2nn = torch.nn.Linear(rnn_input_dim, relearn_size)
+				self.embedding2nn = torch.nn.Linear(self.embeddings.embedding_length, relearn_size)
 				rnn_input_dim = relearn_size
 
 		self.train_initial_hidden_state = train_initial_hidden_state
@@ -394,20 +358,20 @@ class SequenceTagger(flair.nn.Model):
 				)
 				self.transitions.detach()[:,
 					self.tag_dictionary.get_idx_for_item(START_TAG), :
-				] = -1e12
+				] = -10000
 				self.transitions.detach()[:,
 					:, self.tag_dictionary.get_idx_for_item(STOP_TAG)
-				] = -1e12
+				] = -10000
 			else:
 				self.transitions = torch.nn.Parameter(
 					torch.randn(self.tagset_size, self.tagset_size)
 				)
 				self.transitions.detach()[
 					self.tag_dictionary.get_idx_for_item(START_TAG), :
-				] = -1e12
+				] = -10000
 				self.transitions.detach()[
 					:, self.tag_dictionary.get_idx_for_item(STOP_TAG)
-				] = -1e12
+				] = -10000
 		if self.use_transition_attention:
 			sent_feats_size=self.hidden_size * (2*(1+int(self.bidirectional))) if self.use_rnn else self.embeddings.embeddings[0].embedding_length
 			if not self.use_rnn:
@@ -428,10 +392,8 @@ class SequenceTagger(flair.nn.Model):
 		#   self.init_biaf(teacher_hidden,num_teachers)
 		if self.use_mfvi:
 			self.mfvi=MFVI(hidden_size*num_directions,self.tagset_size,**self.config['MFVI'])
-		if not testing:
-			self.to(flair.device)
-
-
+		
+		self.to(flair.device)
 	def _get_state_dict(self):
 		model_state = {
 			"state_dict": self.state_dict(),
@@ -465,19 +427,10 @@ class SequenceTagger(flair.nn.Model):
 			"relearn_size": self.relearn_size,
 			"embedding_selector": self.embedding_selector,
 			"new_drop": self.new_drop,
-			"use_rl": self.use_rl,
-			"use_embedding_masks": self.use_embedding_masks,
-			"embedding_attention": self.embedding_attention,
-			"use_gumbel": self.use_gumbel,
-			"remove_x": self.remove_x,
-			"multi_view_training": self.multi_view_training,
-			"calculate_l2_loss": self.calculate_l2_loss,
-			"l2_loss_only": self.l2_loss_only,
 		}
 		return model_state
 
-
-	def _init_model_with_state_dict(state, testing = False):
+	def _init_model_with_state_dict(state):
 
 		use_dropout = 0.0 if not "use_dropout" in state.keys() else state["use_dropout"]
 		use_word_dropout = (
@@ -526,19 +479,9 @@ class SequenceTagger(flair.nn.Model):
 			relearn_size = -1 if "relearn_size" not in state else state["relearn_size"],
 			embedding_selector = False if "embedding_selector" not in state else state["embedding_selector"],
 			new_drop = False if "new_drop" not in state else state["new_drop"],
-			use_rl = False if "use_rl" not in state else state["use_rl"],
-			use_gumbel = False if "use_gumbel" not in state else state["use_gumbel"],
-			use_embedding_masks = False if "use_embedding_masks" not in state else state["use_embedding_masks"],
-			embedding_attention = False if "embedding_attention" not in state else state["embedding_attention"],
-			testing = testing,
-			remove_x = False if "remove_x" not in state else state["remove_x"],
-			multi_view_training = False if "multi_view_training" not in state else state["multi_view_training"],
-			calculate_l2_loss = False if "calculate_l2_loss" not in state else state["calculate_l2_loss"],
-			l2_loss_only = False if "l2_loss_only" not in state else state["l2_loss_only"],
 		)
 		model.load_state_dict(state["state_dict"])
 		return model
-
 
 	def evaluate(
 		self,
@@ -546,7 +489,7 @@ class SequenceTagger(flair.nn.Model):
 		out_path: Path = None,
 		embeddings_storage_mode: str = "cpu",
 		prediction_mode: bool = False
-	) -> (Result, float):
+		) -> (Result, float):
 		data_loader.assign_tags(self.tag_type,self.tag_dictionary)
 		with torch.no_grad():
 			eval_loss = 0
@@ -634,13 +577,12 @@ class SequenceTagger(flair.nn.Model):
 
 			return result, eval_loss
 
-
 	def write_prediction(
 		self,
 		data_loader: DataLoader,
 		out_path: Path = None,
 		embeddings_storage_mode: str = "cpu",
-	) -> (Result, float):
+		) -> (Result, float):
 
 		with torch.no_grad():
 			eval_loss = 0
@@ -700,7 +642,7 @@ class SequenceTagger(flair.nn.Model):
 
 	def forward_loss(
 		self, data_points: Union[List[Sentence], Sentence], sort=True
-	) -> torch.tensor:
+		) -> torch.tensor:
 		features = self.forward(data_points)
 		return self._calculate_loss(features, data_points)
 
@@ -708,7 +650,7 @@ class SequenceTagger(flair.nn.Model):
 	def simple_forward_distillation_loss(
 		self, data_points: Union[List[Sentence], Sentence], teacher_data_points: Union[List[Sentence], Sentence]=None, teacher=None, sort=True,
 		interpolation=0.5, train_with_professor=False, professor_interpolation=0.5,
-	) -> torch.tensor:
+		) -> torch.tensor:
 		lengths = [len(sentence.tokens) for sentence in data_points]
 		longest_token_sequence_in_batch: int = max(lengths)
 		features = self.forward(data_points)
@@ -727,6 +669,14 @@ class SequenceTagger(flair.nn.Model):
 			lengths_input=lengths_input.reshape(-1).cuda()
 
 			distillation_loss=self._calculate_crf_distillation_loss(features_input,tags,lengths_input)
+
+		elif self.distill_dp:
+			teacher_target_scores = data_points.teacher_features['posteriors']
+			assert reduce(lambda x,y:x*y, teacher_target_scores.shape) == reduce(lambda x,y:x*y, features.shape)
+			if teacher_target_scores.shape != features.shape:
+				teacher_target_scores = (teacher_target_scores.reshape(features.shape)).to(features.device)
+			distillation_loss = self._calculate_distillation_loss(features, teacher_target_scores, torch.Tensor(lengths), T=self.temperature, teacher_is_score=False)
+
 		else:
 			teacher_features = torch.zeros(
 				[
@@ -745,9 +695,9 @@ class SequenceTagger(flair.nn.Model):
 					teacher_features[s_id][: len(sentence)] = sentence.get_teacher_prediction()
 			
 			distillation_loss = self._calculate_distillation_loss(features, teacher_features, torch.Tensor(lengths), T=self.temperature, teacher_is_score=not self.distill_prob)
+		
+
 		return interpolation * distillation_loss + (1-interpolation) * target_loss
-
-
 	def sequence_mask(self, lengths, max_len=None):
 		"""
 		Creates a boolean mask from sequence lengths.
@@ -759,20 +709,36 @@ class SequenceTagger(flair.nn.Model):
 				.repeat(batch_size, 1)
 				.lt(lengths.unsqueeze(1)))
 	
-
-	def _calculate_distillation_loss(self, features, teacher_features, lengths, T = 1):
+	#--200830 ner kd----------------------
+	def _calculate_distillation_loss(self, features, teacher_features, lengths, T = 1,teacher_is_score=True):
 		# TODO: time with mask, and whether this should do softmax
 		# mask=self.sequence_mask(lengths, max_len).unsqueeze(-1).cuda().type_as(features)
-		mask=self.mask
-		KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), F.softmax(teacher_features/T, dim=-1),reduction='none') * mask * T * T
+		# pdb.set_trace()
+		mask=self.mask.unsqueeze(dim=-1)
+		
+		if teacher_is_score:
+			KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), F.softmax(teacher_features/T, dim=-1),reduction='none') * mask * T * T
+		else:
+			KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), teacher_features,reduction='none') * mask * T *T
 		# KD_loss = KD_loss.sum()/mask.sum()
 		if self.sentence_level_loss or self.use_crf:
 			KD_loss = KD_loss.sum()/KD_loss.shape[0]
 		else:
 			KD_loss = KD_loss.sum()/mask.sum()
 		return KD_loss
-		# return torch.nn.functional.MSELoss(features, teacher_features, reduction='mean')
 
+	# def _calculate_distillation_loss(self, features, teacher_features, lengths, T = 1):
+	# 	# TODO: time with mask, and whether this should do softmax
+	# 	# mask=self.sequence_mask(lengths, max_len).unsqueeze(-1).cuda().type_as(features)
+	# 	mask=self.mask
+	# 	KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), F.softmax(teacher_features/T, dim=-1),reduction='none') * mask * T * T
+	# 	# KD_loss = KD_loss.sum()/mask.sum()
+	# 	if self.sentence_level_loss or self.use_crf:
+	# 		KD_loss = KD_loss.sum()/KD_loss.shape[0]
+	# 	else:
+	# 		KD_loss = KD_loss.sum()/mask.sum()
+	# 	return KD_loss
+		# return torch.nn.functional.MSELoss(features, teacher_features, reduction='mean')
 
 	def _calculate_crf_distillation_loss(self, features, tags, lengths):
 
@@ -780,7 +746,6 @@ class SequenceTagger(flair.nn.Model):
 		gold_score = self._score_sentence(features, tags, lengths)
 		score = forward_score - gold_score
 		return score.mean()
-
 
 	def predict(
 		self,
@@ -839,36 +804,15 @@ class SequenceTagger(flair.nn.Model):
 
 			return sentences
 
-
-	def forward(self, sentences: List[Sentence], prediction_mode = False, return_sentence_tensor = False):
-		# self.zero_grad()
+	def forward(self, sentences: List[Sentence]):
+		self.zero_grad()
+		
 		lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
 
 		longest_token_sequence_in_batch: int = max(lengths)
-
-
-		if prediction_mode and self.embedding_selector and self.use_rl and not self.use_gumbel:
-			self.embeddings.embed(sentences,embedding_mask=self.selection)
-		else:
-			self.embeddings.embed(sentences)
-	
-					
-		if hasattr(sentences,'features') and sentences.features!={}:
-			# #==============debug==============
-			# self.embedding_selector=True
-			# self.use_rl=True
-			# self.use_embedding_masks=True
-			# sentences.embedding_mask = torch.zeros(len(sentences),2).float()
-			# # pdb.set_trace()
-			# for idx in range(len(sentences.embedding_mask)):
-			#   if sentences[idx].lang_id == 0:
-			#       sentences.embedding_mask[idx,0]=0
-			#       sentences.embedding_mask[idx,1]=1
-			#   if sentences[idx].lang_id == 1:
-			#       sentences.embedding_mask[idx,0]=1
-			#       sentences.embedding_mask[idx,1]=0
-			# # pdb.set_trace()
-			# #==============debug==============
+				
+		self.embeddings.embed(sentences)
+		if hasattr(sentences,'features'):
 			if self.map_embeddings:
 				new_list=[]
 				# pdb.set_trace()
@@ -877,41 +821,17 @@ class SequenceTagger(flair.nn.Model):
 				sentence_tensor = torch.cat(new_list,-1)
 			elif self.embedding_selector:
 				# pdb.set_trace()
-				if self.use_rl:
-					if self.use_embedding_masks:
-						sentence_tensor = [sentences.features[x].to(flair.device) for idx, x in enumerate(sorted(sentences.features.keys()))]
-						sentence_masks = [torch.ones_like(sentence_tensor[idx])*sentences.embedding_mask[:,idx,None,None].to(flair.device) for idx, x in enumerate(sorted(sentences.features.keys()))]
-						sentence_tensor = torch.cat([x*sentence_masks[idx] for idx,x in enumerate(sentence_tensor)],-1)
-					else:
-						if self.embedding_attention:
-							embatt=torch.sigmoid(self.selector)
-							sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * self.selection[idx] * embatt[idx] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
-						else:
-							sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * self.selection[idx] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
-					# sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * self.selection[idx] for idx, x in enumerate(sentences.features.keys())],-1)
+				if self.training:
+					selection=torch.nn.functional.gumbel_softmax(self.selector,hard=True)
+					sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * selection[idx][1] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
 				else:
-					if self.use_gumbel:
-						if self.training:
-							selection=torch.nn.functional.gumbel_softmax(self.selector,hard=True)
-							sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * selection[idx][1] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
-						else:
-							selection=torch.argmax(self.selector,-1)
-							sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * selection[idx] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
-					else:
-						selection=torch.sigmoid(self.selector)
-						sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * selection[idx] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
-					
+					selection=torch.argmax(self.selector,-1)
+					sentence_tensor = torch.cat([sentences.features[x].to(flair.device) * selection[idx] for idx, x in enumerate(sorted(sentences.features.keys()))],-1)
 				# print(self.selector)
 				# print(selection)
 				
 			else:
 				sentence_tensor = torch.cat([sentences.features[x].to(flair.device) for x in sorted(sentences.features.keys())],-1)
-			#==============debug==============
-			# pdb.set_trace()
-			# sentence_tensor = torch.cat([sentence_tensor,torch.zeros_like(sentence_tensor)],-1)
-			# sentence_tensor = torch.cat([sentence_tensor*self.selection[0],torch.zeros_like(sentence_tensor)*self.selection[1]],-1)
-			#==============debug==============
-
 			if hasattr(self,'keep_embedding'):
 				if self.map_embeddings:
 					sentence_tensor=[]
@@ -935,9 +855,9 @@ class SequenceTagger(flair.nn.Model):
 			# initialize zero-padded word embeddings tensor
 			sentence_tensor = torch.zeros(
 			  [
-				  len(sentences),
-				  longest_token_sequence_in_batch,
-				  self.embeddings.embedding_length,
+			      len(sentences),
+			      longest_token_sequence_in_batch,
+			      self.embeddings.embedding_length,
 			  ],
 			  dtype=torch.float,
 			  device=flair.device,
@@ -946,7 +866,7 @@ class SequenceTagger(flair.nn.Model):
 			for s_id, sentence in enumerate(sentences):
 			  # fill values with word embeddings
 			  sentence_tensor[s_id][: len(sentence)] = torch.cat(
-				  [token.get_embedding().unsqueeze(0) for token in sentence], 0
+			      [token.get_embedding().unsqueeze(0) for token in sentence], 0
 			  )
 			# sentence_tensor = sentence_tensor.to(flair.device)
 		# # TODO: this can only be removed once the implementations of word_dropout and locked_dropout have a batch_first mode
@@ -1020,21 +940,15 @@ class SequenceTagger(flair.nn.Model):
 		  sentence_tensor = self.dropout2(sentence_tensor)
 		if self.use_decoder_timer:
 			self.time=time.time()
-		if self.calculate_l2_loss:
-			self.sentence_tensor = sentence_tensor
-
 		features = self.linear(sentence_tensor)
-		self.mask=self.sequence_mask(torch.tensor(lengths),longest_token_sequence_in_batch).cuda().type_as(features)
-
-		if return_sentence_tensor:
-			return sentence_tensor
-
 		
+		self.mask=self.sequence_mask(torch.tensor(lengths),longest_token_sequence_in_batch).cuda().type_as(features)
 		if self.use_mfvi:
 			# self.sent_feats=sentence_tensor
 			token_feats=sentence_tensor
 			unary_score=features
-			features = self.mfvi(token_feats, unary_score, self.mask,lengths=torch.LongTensor(lengths).to(flair.device))
+			
+			features=self.mfvi(token_feats,unary_score,self.mask,lengths=torch.LongTensor(lengths).to(flair.device))
 		if (self.biaf_attention or self.use_transition_attention):
 			if self.token_level_attention:
 				self.sent_feats=sentence_tensor
@@ -1049,7 +963,7 @@ class SequenceTagger(flair.nn.Model):
 			self.set_enhanced_transitions(sentences)
 
 		return features
-	
+
 	def set_enhanced_transitions(self, sentences: List[Sentence]):
 		if self.use_transition_attention:
 			# (batch_size, feat_size)
@@ -1066,7 +980,6 @@ class SequenceTagger(flair.nn.Model):
 			# (batch_size,) (target_languages,num_tags,num_tags) -> (batch_size, num_tags, num_tags)
 			self.enhanced_transitions = torch.index_select(self.transitions,0,sent_lang_id)
 			return 
-
 	def _score_sentence(self, feats, tags, lens_):
 
 		start = torch.tensor(
@@ -1102,7 +1015,7 @@ class SequenceTagger(flair.nn.Model):
 
 	def _calculate_loss(
 		self, features: torch.tensor, sentences: List[Sentence]
-	) -> float:
+		) -> float:
 
 		lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
 
@@ -1191,22 +1104,10 @@ class SequenceTagger(flair.nn.Model):
 			sentrange=torch.arange(0,distribution.shape[1]).long().cuda()
 		for i, vals in enumerate(zip(feature, lengths)):
 			feats, length=vals
-
 			if self.use_crf and not self.predict_posterior:
-				# pdb.set_trace()
-				if self.remove_x:
-					current_mask = self.mask[i].bool().unsqueeze(-1) * torch.ones_like(feats).bool()
-					current_feat = feats.masked_select(current_mask).view(self.mask[i].sum().long(),-1)
-					confidences, tag_seq, scores = self._viterbi_decode(current_feat, all_scores=get_all_tags, current_idx = i,)
-					if len(tag_seq) < length:
-						x_before_seq = torch.where(self.mask[i]>0)[0][0].item()
-						confidences = [1]*x_before_seq + confidences
-						tag_seq = [self.tag_dictionary.item2idx[b'S-X']]*x_before_seq + tag_seq
-						x_after_seq = length - len(tag_seq)
-						confidences = confidences + [1]*x_after_seq 
-						tag_seq = tag_seq + [self.tag_dictionary.item2idx[b'S-X']]*x_after_seq
-				else:
-					confidences, tag_seq, scores = self._viterbi_decode(feats[:length], all_scores=get_all_tags, current_idx = i,)
+				confidences, tag_seq, scores = self._viterbi_decode(
+					feats[:length], all_scores=get_all_tags, current_idx = i,
+				)
 			else:
 				tag_seq = []
 				confidences = []
@@ -1242,6 +1143,7 @@ class SequenceTagger(flair.nn.Model):
 						for score_dist in scores
 					]
 				)
+
 		return tags, all_tags
 
 	def _viterbi_decode(self, feats, all_scores: bool = False, current_idx = 0):
@@ -1249,7 +1151,7 @@ class SequenceTagger(flair.nn.Model):
 		backscores = []
 
 		init_vvars = (
-			torch.FloatTensor(1, self.tagset_size).to(flair.device).fill_(-1e12)
+			torch.FloatTensor(1, self.tagset_size).to(flair.device).fill_(-10000.0)
 		)
 		init_vvars[0][self.tag_dictionary.get_idx_for_item(START_TAG)] = 0
 		forward_var = init_vvars
@@ -1279,10 +1181,10 @@ class SequenceTagger(flair.nn.Model):
 				forward_var
 				+ self.transitions[self.tag_dictionary.get_idx_for_item(STOP_TAG)]
 			)
-		terminal_var.detach()[self.tag_dictionary.get_idx_for_item(STOP_TAG)] = -1e12
+		terminal_var.detach()[self.tag_dictionary.get_idx_for_item(STOP_TAG)] = -10000.0
 		terminal_var.detach()[
 			self.tag_dictionary.get_idx_for_item(START_TAG)
-		] = -1e12
+		] = -10000.0
 		best_tag_id = argmax(terminal_var.unsqueeze(0))
 
 		best_path = [best_tag_id]
@@ -1325,9 +1227,9 @@ class SequenceTagger(flair.nn.Model):
 
 		return best_scores, best_path, scores
 
-	def _forward_alg(self, feats, lens_, distill_mode=False, T = 1):
+	def _forward_alg(self, feats, lens_, distill_mode=False):
 
-		init_alphas = torch.FloatTensor(self.tagset_size).fill_(-1e12)
+		init_alphas = torch.FloatTensor(self.tagset_size).fill_(-10000.0)
 		init_alphas[self.tag_dictionary.get_idx_for_item(START_TAG)] = 0.0
 		forward_var = torch.zeros(
 			feats.shape[0],
@@ -1344,12 +1246,7 @@ class SequenceTagger(flair.nn.Model):
 				1, self.transitions.shape[0], self.transitions.shape[1]
 			).repeat(feats.shape[0], 1, 1)
 			# transitions = temp_transitions.view(1, temp_transitions.shape[0], temp_transitions.shape[1]).repeat(feats.shape[0], 1, 1)
-		if T!=1:
-			transitions = transitions/T
-			feats = feats/T
-		# pdb.set_trace()
 		for i in range(feats.shape[1]):
-
 			emit_score = feats[:, i, :]
 
 			tag_var = (
@@ -1377,22 +1274,21 @@ class SequenceTagger(flair.nn.Model):
 			# from the first tag to the last tag
 			# forward_var = forward_var[:,1:].clone()
 			return forward_var[:,1:]
-
 		forward_var = forward_var[range(forward_var.shape[0]), lens_, :]
 		if self.enhanced_crf:
 			terminal_var = forward_var + self.enhanced_transitions[
 				:, self.tag_dictionary.get_idx_for_item(STOP_TAG)
-			]/T
+			]
 		else:
 			terminal_var = forward_var + self.transitions[
 				self.tag_dictionary.get_idx_for_item(STOP_TAG)
-			][None, :].repeat(forward_var.shape[0], 1)/T
+			][None, :].repeat(forward_var.shape[0], 1)
 
 		alpha = log_sum_exp_batch(terminal_var)
 
 		return alpha
 
-	def _backward_alg(self, feats, lens_, T = 1, distill_mode=True):
+	def _backward_alg(self, feats, lens_):
 		# reverse the transitions
 		if self.enhanced_crf:
 			bw_transitions=self.enhanced_transitions.transpose(1,2)
@@ -1406,7 +1302,7 @@ class SequenceTagger(flair.nn.Model):
 			reversed_feats[i][:lens_[i]] = feat[:lens_[i]].flip([0])
 			# reverse_feats[i][:lens_[i]] = feat[:lens_[i]].filp(0)
 		
-		init_alphas = torch.FloatTensor(self.tagset_size).fill_(-1e12)
+		init_alphas = torch.FloatTensor(self.tagset_size).fill_(-10000.0)
 		init_alphas[self.tag_dictionary.get_idx_for_item(STOP_TAG)] = 0.0
 		
 		forward_var = torch.zeros(
@@ -1424,18 +1320,11 @@ class SequenceTagger(flair.nn.Model):
 				1, bw_transitions.shape[0], bw_transitions.shape[1]
 			).repeat(reversed_feats.shape[0], 1, 1)
 
-		if T!=1:
-			transitions = transitions/T
-			reversed_feats = reversed_feats/T
-
 		for i in range(reversed_feats.shape[1]):
-			if i == 0:
-				emit_score = torch.zeros_like(reversed_feats[:, 0, :])
-			else:
-				emit_score = reversed_feats[:, i-1, :]
-			# pdb.set_trace()
+			emit_score = reversed_feats[:, i, :]
+
 			tag_var = (
-				emit_score[:, None, :].repeat(1, transitions.shape[2], 1)
+				emit_score[:, :, None].repeat(1, 1, transitions.shape[2])
 				+ transitions
 				+ forward_var[:, i, :][:, :, None]
 				.repeat(1, 1, transitions.shape[2])
@@ -1455,33 +1344,29 @@ class SequenceTagger(flair.nn.Model):
 
 			forward_var = cloned
 		# if self.distill_posterior:
-		if distill_mode:
-			backward_var = forward_var[:,1:].clone()
-			new_backward_var = torch.zeros_like(backward_var)
-			for i, var in enumerate(backward_var):
-				
-				# flip over tokens, [num_tokens * num_tags]
-				new_backward_var[i,:lens_[i]] = var[:lens_[i]].flip([0])
-				
-			return new_backward_var
-
+		backward_var = forward_var[:,1:].clone()
+		new_backward_var = torch.zeros_like(backward_var)
+		for i, var in enumerate(backward_var):
+			
+			# flip over tokens, [num_tokens * num_tags]
+			new_backward_var[i,:lens_[i]] = var[:lens_[i]].flip([0])
+			
+		return new_backward_var
+		# for 
 		forward_var = forward_var[range(forward_var.shape[0]), lens_, :]
 		if self.enhanced_crf:
-			assert 0, 'not implementated'
 			terminal_var = forward_var + bw_transitions[:,
 				self.tag_dictionary.get_idx_for_item(START_TAG)
 			]
 		else:
-			# pdb.set_trace()
 			terminal_var = forward_var + bw_transitions[
 				self.tag_dictionary.get_idx_for_item(START_TAG)
-			][None, :].repeat(forward_var.shape[0], 1) + reversed_feats[range(reversed_feats.shape[0]), lens_-1, :]/T
+			][None, :].repeat(forward_var.shape[0], 1)
 
 		alpha = log_sum_exp_batch(terminal_var)
 
 		return alpha
 
-	
 	@staticmethod
 	def _filter_empty_sentences(sentences: List[Sentence]) -> List[Sentence]:
 		filtered_sentences = [sentence for sentence in sentences if sentence.tokens]
@@ -1655,7 +1540,6 @@ class SequenceTagger(flair.nn.Model):
 				data.append(row)
 			data.append(["----"])
 		print(tabulate(data, headers=["FROM", "TO", "SCORE"]))
-
 	def _viterbi_decode_nbest(self, feats, mask, nbest):
 		"""
 		Code from NCRFpp with some modification: https://github.com/jiesutd/NCRFpp/blob/master/model/crf.py
@@ -1820,7 +1704,7 @@ class SequenceTagger(flair.nn.Model):
 
 
 class FastSequenceTagger(SequenceTagger):
-	def _init_model_with_state_dict(state, testing = False):
+	def _init_model_with_state_dict(state):
 		use_dropout = 0.0 if not "use_dropout" in state.keys() else state["use_dropout"]
 		use_word_dropout = (
 			0.0 if not "use_word_dropout" in state.keys() else state["use_word_dropout"]
@@ -1882,22 +1766,13 @@ class FastSequenceTagger(SequenceTagger):
 			relearn_size = -1 if "relearn_size" not in state else state["relearn_size"],
 			embedding_selector = False if "embedding_selector" not in state else state["embedding_selector"],
 			new_drop = False if "new_drop" not in state else state["new_drop"],
-			use_rl = False if "use_rl" not in state else state["use_rl"],
-			use_gumbel = False if "use_gumbel" not in state else state["use_gumbel"],
-			use_embedding_masks = False if "use_embedding_masks" not in state else state["use_embedding_masks"],
-			embedding_attention = False if "embedding_attention" not in state else state["embedding_attention"],
-			testing = testing,
-			remove_x = False if "remove_x" not in state else state["remove_x"],
-			multi_view_training = False if "multi_view_training" not in state else state["multi_view_training"],
-			calculate_l2_loss = False if "calculate_l2_loss" not in state else state["calculate_l2_loss"],
-			l2_loss_only = False if "l2_loss_only" not in state else state["l2_loss_only"],
 		)
 		model.load_state_dict(state["state_dict"])
 		return model
 
 	def forward_loss(
-		self, data_points: Union[List[Sentence], Sentence], sort=True, return_features = False, 
-	) -> torch.tensor:
+		self, data_points: Union[List[Sentence], Sentence], sort=True
+		) -> torch.tensor:
 		features = self.forward(data_points)
 		# lengths = [len(sentence.tokens) for sentence in data_points]
 		# longest_token_sequence_in_batch: int = max(lengths)
@@ -1905,229 +1780,15 @@ class FastSequenceTagger(SequenceTagger):
 		# max_len = features.shape[1]
 		# mask=self.sequence_mask(torch.tensor(lengths), max_len).cuda().type_as(features)
 		loss = self._calculate_loss(features, data_points, self.mask)
-
-		if self.ext_loss is not None and self.ner_ext_loss:
-			inbatch_loss, self.correct = self._calculate_triplet_loss(data_points, self.mask)
-			loss += inbatch_loss
-			
-			true_positives = len(data_points)
-			n_predictions = len(data_points)
-			n_targets = len(data_points)
-			n_true_positives = self.correct
-			n_false_positives = n_predictions - n_true_positives
-			n_false_negatives = n_targets - n_true_positives
-			self.tp = n_true_positives
-			self.fp = n_false_positives
-			self.fn = n_false_negatives
-		
-		# if temp:
-		#   print(features.sum())
-		#   tag_list = self.check_multi_view(data_points)
-		#   multi_view_loss = self._calculate_multi_view_loss(features, data_points, self.mask, tag_list)
-		#   if multi_view_loss>0:
-		#       temp_loss = 0.5*loss+0.5*multi_view_loss
-		#       log.info(f'{temp_loss}')
-		if return_features:
-			return loss, features
-			
-			#   # loss = interpolation * distillation_loss + (1-interpolation) * target_loss
-		return loss	
-
-	def multi_view_loss(self, data_points: Union[List[Sentence], Sentence], features, tag_list, sort=True):
-		# if self.multi_view_training:
-		multi_view_loss = self._calculate_multi_view_loss(features, data_points, self.mask, tag_list)
-		return multi_view_loss
-
-	def check_multi_view(
-		self, sentences: List[Sentence],
-	) -> float:
-		# currently, only support finetuning transformer models
-		if sum([hasattr(sentence,'orig_sent') for sentence in sentences]) == 0:
-			return False
-
-		lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
-
-		tag_list: List = []
-		try:
-			tag_list=torch.stack([getattr(sentence,self.tag_type+'_tags').to(flair.device) for sentence in sentences],0).long()
-		except:
-			tag_list: List = []
-			for s_id, sentence in enumerate(sentences):
-				# get the tags in this sentence
-				tag_idx: List[int] = [
-					self.tag_dictionary.get_idx_for_item(token.get_tag(self.tag_type).value)
-					for token in sentence
-				]
-				# add tags as tensor
-				tag = torch.tensor(tag_idx, device=flair.device)
-				tag_list.append(tag)
-
-			tag_list, _ = pad_tensors(tag_list)
-		remove_tag = self.tag_dictionary.get_idx_for_item('S-X')
-		if remove_tag not in tag_list:
-			return False
-		return tag_list
-
-	def _calculate_multi_view_loss(
-		self, features: torch.tensor, sentences: List[Sentence], mask: torch.tensor, tag_list,
-	) -> float:
-		# currently, only support finetuning transformer models
-		# lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
-
-		# tag_list: List = []
-		# try:
-		#   tag_list=torch.stack([getattr(sentence,self.tag_type+'_tags').to(flair.device) for sentence in sentences],0).long()
-		# except:
-		#   tag_list: List = []
-		#   for s_id, sentence in enumerate(sentences):
-		#       # get the tags in this sentence
-		#       tag_idx: List[int] = [
-		#           self.tag_dictionary.get_idx_for_item(token.get_tag(self.tag_type).value)
-		#           for token in sentence
-		#       ]
-		#       # add tags as tensor
-		#       tag = torch.tensor(tag_idx, device=flair.device)
-		#       tag_list.append(tag)
-
-		#   tag_list, _ = pad_tensors(tag_list)
-		remove_tag = self.tag_dictionary.get_idx_for_item('S-X')
-		if remove_tag not in tag_list:
-			return 0
-		
-		# ======= renew the mask =======
-		mask_tags = remove_tag == tag_list
-		mask = (mask.bool() & ~mask_tags).float()
-		self.mask = mask
-		for sent_id, sentence in enumerate(sentences):
-			if not hasattr(sentence,'orig_sent'):
-				false_tensor = torch.zeros_like(mask_tags[0]).bool()
-				mask_tags[sent_id] = mask_tags[sent_id]&false_tensor
-		
-		selected_mask = mask[torch.where(mask_tags.sum(-1)>0)]
-		# selected_mask = mask.masked_select().view((mask_tags.sum(-1)>0).sum(),-1)
-		masked_lengths = selected_mask.sum(-1).long()
-		selected_features = features[torch.where(mask_tags.sum(-1)>0)]
-		masked_features = torch.zeros([selected_features.shape[0],masked_lengths.max(),selected_features.shape[-1]]).type_as(selected_features)
-		select_mask = selected_mask.bool()
-		temp_mask = torch.ones(selected_features.shape).type_as(selected_features).bool() * select_mask.unsqueeze(-1).bool()
-		# masked_tag_list = torch.zeros(masked_features.shape[:2]).type_as(tag_list)
-		new_mask = torch.zeros(masked_features.shape[:2]).type_as(select_mask)
-
-		if self.calculate_l2_loss:
-			token_representations = self.sentence_tensor
-			selected_representations = token_representations[torch.where(mask_tags.sum(-1)>0)]
-			masked_representations = torch.zeros([selected_representations.shape[0],masked_lengths.max(),selected_representations.shape[-1]]).type_as(selected_representations)
-			temp_rep_mask = torch.ones(selected_representations.shape).type_as(selected_representations).bool() * select_mask.unsqueeze(-1).bool()
-		for i in range(len(select_mask)):
-			try:
-				masked_features[i,:masked_lengths[i],:] = selected_features[i].masked_select(temp_mask[i]).view(masked_lengths[i],-1)
-				if self.calculate_l2_loss:
-					masked_representations[i,:masked_lengths[i],:] = selected_representations[i].masked_select(temp_rep_mask[i]).view(masked_lengths[i],-1)
-			except:
-				pdb.set_trace()
-			# masked_tag_list[i,:masked_lengths[i]] = tag_list[i].masked_select(select_mask[i])
-			new_mask[i,:masked_lengths[i]] = select_mask[i].masked_select(select_mask[i])
-		
-		masked_features = masked_features.detach()
-
-		if hasattr(sentences,'orig_sentences'):
-			orig_sentences = sentences.orig_sentences
-		else:
-			orig_sentences = BatchedData([sentence.orig_sent for idx, sentence in enumerate(sentences) if remove_tag in tag_list[idx] and hasattr(sentence,'orig_sent')])
-			sentences.orig_sentences = orig_sentences
-
-		orig_features = self.forward(orig_sentences)
-
-		if self.calculate_l2_loss:
-			masked_representations = masked_representations.detach()
-			orig_representations = self.sentence_tensor
-			try:
-				l2_loss = torch.nn.functional.mse_loss(orig_representations,masked_representations, reduction='none') * new_mask.unsqueeze(-1)
-			except:
-				pdb.set_trace()
-			if self.sentence_level_loss or self.use_crf:
-				l2_loss = l2_loss.sum()/l2_loss.shape[0]/masked_representations.shape[-1]
-			else:
-				l2_loss = l2_loss.sum()/new_mask.sum()/masked_representations.shape[-1]
-		else:
-			l2_loss = 0
-		if self.l2_loss_only:
-			return l2_loss
-		# pdb.set_trace()
-		try:
-			assert (new_mask == self.mask).all()
-		except:
-			pdb.set_trace()
-		if self.use_crf:
-			if self.distill_exact:
-				partition_score = self._forward_alg(orig_features, masked_lengths, T=self.temperature)
-				# Score(y_{i-1},y_i)=emission(y_{i})+transition
-				# emission(y_{i}, None) + transition(i, i-1) = score(y_i,y_{i-1})
-				structure_score = orig_features[:,:,:,None] + self.transitions[None,None,:,:]
-				structure_score = structure_score.view(structure_score.shape[0],structure_score.shape[1],-1)
-				# only keep the structure score of s(y_1,y_2) ... s(y_{n-1},y_n)
-				structure_score = structure_score[:,1:]
-				
-				# n x 1 x L + 1 x L -> n x 1 x L
-				start_score = orig_features[:,0] + self.transitions[None,:,self.tag_dictionary.get_idx_for_item(START_TAG)]
-				
-				end_score = self.transitions[None,self.tag_dictionary.get_idx_for_item(STOP_TAG),:]
-
-
-				# ============================== teacher ================================
-				teacher_startscore = (masked_features[:,0] + self.transitions[None,:,self.tag_dictionary.get_idx_for_item(START_TAG)]) / self.temperature
-				teacher_endscore = end_score / self.temperature
-				forward_var = self._forward_alg(masked_features, masked_lengths, distill_mode=True)
-				backward_var = self._backward_alg(masked_features, masked_lengths)
-				teacher_structure_score = (masked_features[:,:,:,None] + self.transitions[None,None,:,:])
-				# ============================== teacher ================================
-				binary_mask=self.sequence_mask(masked_lengths-1, masked_lengths.max()-1).to(flair.device).long()
-				forward_backward_score = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ teacher_structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float() / self.temperature
-				if forward_backward_score.shape[1] != 0:
-					forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1)
-				else:
-					forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],forward_backward_score.shape[2]*forward_backward_score.shape[3])
-				forward_backward_score = forward_backward_score.softmax(-1)
-				# pdb.set_trace()
-				teacher_score = forward_backward_score.detach()
-				teacher_startscore = teacher_startscore.detach()
-				teacher_endscore = teacher_endscore.detach()
-
-				# teacher_score = data_points.teacher_features['posteriors'].to(flair.device)[:,:,0]            
-				# teacher_startscore = data_points.teacher_features['start_scores'].to(flair.device)[:,0]
-				# teacher_endscore = data_points.teacher_features['end_scores'].to(flair.device)[:,0]
-				binary_mask = binary_mask.unsqueeze(-1)
-				loss = self._calculate_xstruct_distillation_loss(structure_score, partition_score, start_score, end_score, teacher_score, teacher_startscore, teacher_endscore, binary_mask, T = self.temperature)
-			elif self.distill_posterior:
-				forward_var = self._forward_alg(orig_features, masked_lengths, distill_mode=True)
-				backward_var = self._backward_alg(orig_features, masked_lengths)
-				# forward_var = self.forward_var
-				forward_backward_score = (forward_var + backward_var) * new_mask.unsqueeze(-1)
-				# forward_backward_score = forward_backward_score.unsqueeze(-2)
-				# teacher forward-backward score
-
-				teacher_forward_var = self._forward_alg(masked_features, masked_lengths, distill_mode=True)
-				teacher_backward_var = self._backward_alg(masked_features, masked_lengths)
-				teacher_forward_backward_score = (teacher_forward_var + teacher_backward_var) * new_mask.unsqueeze(-1)
-				teacher_forward_backward_score = teacher_forward_backward_score.detach()
-				
-				loss = self._calculate_distillation_loss(forward_backward_score, teacher_forward_backward_score, new_mask, T=self.temperature)
-					
-		else:
-			# pdb.set_trace()
-			loss = self._calculate_distillation_loss(orig_features, masked_features, new_mask, T=self.temperature)
-		return loss + l2_loss
-
-
+		return loss
 
 	def simple_forward_distillation_loss(
 		self, data_points: Union[List[Sentence], Sentence], teacher_data_points: Union[List[Sentence], Sentence]=None, teacher=None, sort=True,
 		interpolation=0.5, train_with_professor=False, professor_interpolation=0.5, language_attention_warmup = False, calc_teachers_target_loss = False,
 		language_weight = None, biaffine = None, language_vector = None,
-	) -> torch.tensor:
+		) -> torch.tensor:
 		features = self.forward(data_points)
 		lengths = [len(sentence.tokens) for sentence in data_points]
-		batch_size = len(lengths)
 		max_len = features.shape[1]
 		mask=self.mask
 		if self.distill_posterior and self.use_crf:
@@ -2149,114 +1810,6 @@ class FastSequenceTagger(SequenceTagger):
 			posterior_loss/=teacher_scores.shape[-2]
 		else:
 			posterior_loss = 0
-		if self.distill_exact and self.use_crf:
-			# pdb.set_trace()
-			# partition_score is come from log_sum_exp, so we do not need to calculate torch.log(Z)
-			partition_score = self._forward_alg(features,lengths, T=self.temperature)
-			# Score(y_{i-1},y_i)=emission(y_{i})+transition
-			# emission(y_{i}, None) + transition(i, i-1) = score(y_i,y_{i-1})
-			structure_score = features[:,:,:,None] + self.transitions[None,None,:,:]
-			# pdb.set_trace()
-			# structure_score[:,:,self.tag_dictionary.get_idx_for_item(START_TAG),:]=0
-			# structure_score[:,:,:,self.tag_dictionary.get_idx_for_item(START_TAG)]=0
-			# structure_score[:,:,self.tag_dictionary.get_idx_for_item(STOP_TAG),:]=0
-			# structure_score[:,:,:,self.tag_dictionary.get_idx_for_item(STOP_TAG)]=0
-			structure_score = structure_score.view(structure_score.shape[0],structure_score.shape[1],-1)
-			# only keep the structure score of s(y_1,y_2) ... s(y_{n-1},y_n)
-			structure_score = structure_score[:,1:]
-			
-			# n x 1 x L + 1 x L -> n x 1 x L
-			start_score = features[:,0] + self.transitions[None,:,self.tag_dictionary.get_idx_for_item(START_TAG)]
-			
-			end_score = self.transitions[None,self.tag_dictionary.get_idx_for_item(STOP_TAG),:]
-			# pdb.set_trace()
-			# start_score[:,self.tag_dictionary.get_idx_for_item(START_TAG)]=0
-			# start_score[:,self.tag_dictionary.get_idx_for_item(STOP_TAG)]=0
-			# pdb.set_trace()
-			# end_score[:,self.tag_dictionary.get_idx_for_item(START_TAG)]-=end_score[:,self.tag_dictionary.get_idx_for_item(START_TAG)]
-			# end_score[:,self.tag_dictionary.get_idx_for_item(STOP_TAG)]=0
-
-			teacher_score = data_points.teacher_features['posteriors'].to(flair.device)[:,:,0]
-			
-			teacher_startscore = data_points.teacher_features['start_scores'].to(flair.device)[:,0]
-			teacher_endscore = data_points.teacher_features['end_scores'].to(flair.device)[:,0]
-			
-			binary_mask=self.sequence_mask(torch.Tensor(lengths)-1, max_len-1).unsqueeze(-1).cuda().long()
-			if binary_mask.shape[1]==2 and 0:
-				pdb.set_trace()
-				teacher_structure_score = data_points.teacher_features['distributions'].to(flair.device)
-				teacher_structure_score = teacher_structure_score.view(teacher_structure_score.shape[0],teacher_structure_score.shape[1],self.tagset_size,self.tagset_size)[:,1:]*binary_mask.unsqueeze(-1)
-				# 2,1 -> 3,2,1 || 3,2 -> 3,2,1
-				teacher_overall_score = (teacher_startscore.unsqueeze(1)+teacher_structure_score[:,0]).unsqueeze(1)+(teacher_structure_score[:,1]+teacher_endscore.unsqueeze(-1)).unsqueeze(-1)
-				teacher_overall_score = teacher_overall_score.view(batch_size,-1)
-				teacher_overall_prob = teacher_overall_score.softmax(-1)
-
-				student_structure_score=(structure_score*binary_mask).view(batch_size,structure_score.shape[1],self.tagset_size,self.tagset_size)
-				student_overall_score = (start_score.unsqueeze(1)+student_structure_score[:,0]).unsqueeze(1)+(student_structure_score[:,1]+end_score.unsqueeze(-1)).unsqueeze(-1)
-				temp_loss = -((teacher_overall_prob.view(batch_size,-1) * student_overall_score.view(batch_size,-1)).sum(-1)- partition_score)
-				# teacher_logits = data_points.teacher_features['distributions'].to(flair.device)
-				# pdb.set_trace()
-				# sent lengths = 2
-				# L*L
-				# teacher_prob=teacher_logits.softmax(-1)
-				# teacher_prob = teacher_prob*mask.unsqueeze(-1)
-				# all_sent_probs=teacher_prob[:,0].unsqueeze(1)*teacher_prob[:,1].unsqueeze(-1)
-				# all_sent_scores = (structure_score*binary_mask)[:,0] + (start_score[:,None,:] + end_score[:,:,None]).view(batch_size,-1)
-				# temp_loss = -((all_sent_probs.view(batch_size,-1) * all_sent_scores).sum(-1)- partition_score)
-
-				# all_sent_probs2 = teacher_prob[:,0].unsqueeze(1)
-				# all_sent_scores2 =(start_score + end_score)
-				# temp_loss2 = -((all_sent_probs2.view(batch_size,-1) * all_sent_scores2).sum(-1)- partition_score)
-
-				# ===================
-				# logits = teacher_logits
-				# maxent_prob = logits.softmax(-1)
-				# joint_prob = maxent_prob[:,:-1,None,:]*maxent_prob[:,1:,:,None]
-				# teacher_prob = joint_prob.view(batch_size,joint_prob.shape[1],-1)
-				# teacher_startprob=teacher_startscore.softmax(-1)
-				# teacher_endprob=teacher_endscore.softmax(-1)
-				# KD_loss2 = -(((teacher_prob * structure_score * binary_mask).sum([-1,-2]) + (teacher_startprob * start_score + teacher_endprob * end_score).sum(-1) - partition_score))
-
-
-
-				# logits = teacher_logits
-				# logits[:,:,self.tag_dictionary.get_idx_for_item(STOP_TAG)]-=1e12
-				# logits[:,:,self.tag_dictionary.get_idx_for_item(START_TAG)]-=1e12
-				# maxent_prob = logits.softmax(-1)
-				# joint_prob = maxent_prob[:,:-1,None,:]*maxent_prob[:,1:,:,None]
-				# teacher_prob = joint_prob.view(batch_size,joint_prob.shape[1],-1)
-
-				# teacher_startprob=teacher_startscore.softmax(-1)
-				# teacher_endprob=teacher_endscore.softmax(-1)
-				# KD_loss1 = -(((teacher_prob * structure_score * binary_mask).sum([-1,-2]) + (teacher_startprob * start_score + teacher_endprob * end_score).sum(-1) - partition_score))
-
-				# temp_loss/=batch_size
-
-				# teacher_prob=teacher_score.softmax(-1)
-
-				teacher_prob=teacher_score
-				teacher_startprob=teacher_startscore.softmax(-1)
-				teacher_endprob=teacher_endscore.softmax(-1)
-				KD_loss = -(((teacher_prob * structure_score * binary_mask).sum([-1,-2]) + (teacher_startprob * start_score + teacher_endprob * end_score).sum(-1) - partition_score))
-				print(KD_loss)
-				print(temp_loss)
-				print(KD_loss-temp_loss)
-				print(lengths)
-
-				temp_teacher_prob = teacher_prob.view(batch_size,teacher_prob.shape[1],self.tagset_size,self.tagset_size)
-				continuous_prob = (teacher_startprob.unsqueeze(1)*temp_teacher_prob[:,0]).unsqueeze(1)*(teacher_endprob.unsqueeze(1)*temp_teacher_prob[:,1]).unsqueeze(-1)
-				temp_teacher_overall_prob = teacher_overall_prob.view(batch_size,self.tagset_size,self.tagset_size,self.tagset_size)
-				continuous_prob - temp_teacher_overall_prob
-				torch.where((continuous_prob - temp_teacher_overall_prob)[-1]==(continuous_prob - temp_teacher_overall_prob)[-1].min())
-				# print(KD_loss1)
-				# print(KD_loss2)
-				# print(KD_loss)
-				# print(KD_loss1-KD_loss2)
-				# print(KD_loss-KD_loss1)
-				pdb.set_trace()
-			exact_loss = self._calculate_xstruct_distillation_loss(structure_score, partition_score, start_score, end_score, teacher_score, teacher_startscore, teacher_endscore, binary_mask, T=self.temperature)
-		else:
-			exact_loss = 0
 		distillation_loss = 0
 		teacher_target_loss = 0
 		if self.distill_crf:
@@ -2321,8 +1874,17 @@ class FastSequenceTagger(SequenceTagger):
 			else:
 				distillation_loss=distillation_loss.mean()
 			# distillation_loss, partition, tg_energy=self.crf_loss(crf_scores.transpose(1,0),tags.transpose(1,0),mask_input.transpose(1,0).bool())
-		if not self.use_crf or self.distill_emission:
-			# pdb.set_trace()
+		
+
+
+		if self.distill_dp:
+			teacher_target_scores = data_points.teacher_features['posteriors']
+			assert reduce(lambda x,y:x*y, teacher_target_scores.shape) == reduce(lambda x,y:x*y, features.shape)
+			if teacher_target_scores.shape != features.shape:
+				teacher_target_scores = (teacher_target_scores.reshape(features.shape)).to(features.device)
+			distillation_loss = self._calculate_distillation_loss(features, teacher_target_scores, torch.Tensor(lengths), T=self.temperature, teacher_is_score=False)
+		
+		elif not self.use_crf or self.distill_emission:
 			if teacher is not None:
 				with torch.no_grad():
 					teacher_features = teacher.forward(teacher_data_points)
@@ -2369,20 +1931,19 @@ class FastSequenceTagger(SequenceTagger):
 				if calc_teachers_target_loss:
 					if self.distill_prob:
 						# from prob to log
-						input_teacher_features=(teacher_features+1e-100*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
+						input_teacher_features=(teacher_features+1e-12*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
 					else:
 						input_teacher_features=teacher_features
 					teacher_target_loss = self._calculate_loss(input_teacher_features, data_points, mask)
 				if language_attention_warmup:
 					return teacher_target_loss
+			
 			distillation_loss = self._calculate_distillation_loss(features, teacher_features, mask, T=self.temperature, teacher_is_score=not self.distill_prob)
+		
 		target_loss = self._calculate_loss(features, data_points, mask)
 		# target_loss2 = super()._calculate_loss(features,data_points)
 		# distillation_loss2 = super()._calculate_distillation_loss(features, teacher_features,torch.tensor(lengths))
-		# pdb.set_trace()
-		# print(target_loss)
-		return interpolation * (posterior_loss + distillation_loss + exact_loss) + (1-interpolation) * target_loss + teacher_target_loss
-
+		return interpolation * (posterior_loss + distillation_loss) + (1-interpolation) * target_loss + teacher_target_loss
 	def sequence_mask(self, lengths, max_len=None):
 		"""
 		Creates a boolean mask from sequence lengths.
@@ -2393,49 +1954,42 @@ class FastSequenceTagger(SequenceTagger):
 				.type_as(lengths)
 				.repeat(batch_size, 1)
 				.lt(lengths.unsqueeze(1)))
-
-	def _calculate_distillation_loss(self, features, teacher_features, mask, T = 1, teacher_is_score=True):
+	
+	#--200830 ner kd----------------------
+	def _calculate_distillation_loss(self, features, teacher_features, lengths, T = 1,teacher_is_score=False):
+		# TODO: time with mask, and whether this should do softmax
+		# mask=self.sequence_mask(lengths, max_len).unsqueeze(-1).cuda().type_as(features)
 		# pdb.set_trace()
-		if teacher_is_score:
-			teacher_prob=F.softmax(teacher_features/T, dim=-1)
-		else:
-			teacher_prob=teacher_features
-
-		KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), teacher_prob,reduction='none') * mask.unsqueeze(-1) * T * T
-
+		mask=self.mask.unsqueeze(dim=-1)
+		# pdb.set_trace()
+		# if teacher_is_score:
+		# 	KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), F.softmax(teacher_features/T, dim=-1),reduction='none') * mask * T * T
+		# else:
+		KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), teacher_features,reduction='none') * mask * T * T
 		# KD_loss = KD_loss.sum()/mask.sum()
 		if self.sentence_level_loss or self.use_crf:
 			KD_loss = KD_loss.sum()/KD_loss.shape[0]
 		else:
 			KD_loss = KD_loss.sum()/mask.sum()
 		return KD_loss
+
+
+	# def _calculate_distillation_loss(self, features, teacher_features, mask, T = 1, teacher_is_score=True):
+	# 	# TODO: time with mask, and whether this should do softmax
+	# 	pdb.set_trace()
+	# 	if teacher_is_score:
+	# 		teacher_prob=F.softmax(teacher_features/T, dim=-1)
+	# 	else:
+	# 		teacher_prob=teacher_features
+	# 	KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), teacher_prob,reduction='none') * mask.unsqueeze(-1) * T * T
+
+	# 	# KD_loss = KD_loss.sum()/mask.sum()
+	# 	if self.sentence_level_loss or self.use_crf:
+	# 		KD_loss = KD_loss.sum()/KD_loss.shape[0]
+	# 	else:
+	# 		KD_loss = KD_loss.sum()/mask.sum()
+	# 	return KD_loss
 		# return torch.nn.functional.MSELoss(features, teacher_features, reduction='mean')
-
-	def _calculate_xstruct_distillation_loss(self, structure_score, partition_score, start_score, end_score, teacher_score, teacher_startscore, teacher_endscore, binary_mask, T=1):
-		# structure_score: (B x N x L^2), partition_score: (B x N), teacher_prob: (B x N x L^2)
-		# teacher_prob=teacher_score.softmax(-1)
-		teacher_prob=teacher_score
-		teacher_startprob=teacher_startscore.softmax(-1)
-		teacher_endprob=teacher_endscore.softmax(-1)
-		# KD_loss = -(((teacher_prob * structure_score / T * binary_mask).sum([-1,-2])- partition_score) * T * T)
-		if teacher_prob.shape[1]==0:
-			# pdb.set_trace()
-			KD_loss = -(((teacher_startprob * start_score / T + teacher_endprob * end_score / T).sum(-1) - partition_score) * T * T)
-		else:
-			KD_loss = -(((teacher_prob * structure_score / T * binary_mask).sum([-1,-2]) + (teacher_startprob * start_score / T + teacher_endprob * end_score / T).sum(-1) - partition_score) * T * T)
-		# KD_loss = torch.nn.functional.kl_div(F.log_softmax(features/T, dim=-1), teacher_prob,reduction='none') * mask.unsqueeze(-1) * T * T
-
-		# KD_loss = KD_loss.sum()/mask.sum()
-		# if binary_mask.shape[1]==1:
-		#   pdb.set_trace()
-		if (KD_loss<0).any():
-			KD_loss[torch.where(KD_loss<0)]=0
-		if self.sentence_level_loss or self.use_crf:
-			KD_loss = KD_loss.sum()/KD_loss.shape[0]
-		else:
-			KD_loss = KD_loss.sum()/mask.sum()
-		return KD_loss
-
 	def _calculate_loss(
 		self, features: torch.tensor, sentences: List[Sentence], mask: torch.tensor,
 	) -> float:
@@ -2458,65 +2012,12 @@ class FastSequenceTagger(SequenceTagger):
 				tag_list.append(tag)
 
 			tag_list, _ = pad_tensors(tag_list)
-		if self.remove_x:
-			# pdb.set_trace()
-			remove_tag = self.tag_dictionary.get_idx_for_item('S-X')
-			mask_tags = remove_tag == tag_list
-			mask = (mask.bool() & ~mask_tags).float()
-			self.mask = mask
-
-
-
-		if self.posterior_constraint:
-			# student forward-backward score
-			
-			forward_var = self._forward_alg(features, lengths, distill_mode=True)
-			backward_var = self._backward_alg(features, lengths)
-			# forward_var = self.forward_var
-			forward_backward_score = (forward_var + backward_var) * mask.unsqueeze(-1)
-			# fwbw_probability = F.softmax(forward_backward_score,dim=-1)
-			posterior_score = torch.nn.functional.cross_entropy(forward_backward_score.view(-1,forward_backward_score.shape[-1]), tag_list.view(-1,), reduction='none') * mask.view(-1,)
-			if self.sentence_level_loss:
-				posterior_score = posterior_score.sum()/features.shape[0]
-			else:
-				posterior_score = posterior_score.sum()/mask.sum()
-			score = posterior_score
-			# score = (1-self.posterior_interpolation) * score + self.posterior_interpolation * posterior_score
-		elif self.use_crf:
-			# pdb.set_trace()
-			if self.remove_x:
-				masked_lengths = mask.sum(-1).long()
-				masked_features = torch.zeros([features.shape[0],masked_lengths.max(),features.shape[-1]]).type_as(features)
-				select_mask = mask.bool()
-				temp_mask = torch.ones(features.shape).type_as(features).bool() * mask.unsqueeze(-1).bool()
-				masked_tag_list = torch.zeros(masked_features.shape[:2]).type_as(tag_list)
-				crf_mask = torch.zeros(masked_features.shape[:2]).type_as(mask)
-
-				for i in range(len(mask)):
-					try:
-						masked_features[i,:masked_lengths[i],:] = features[i].masked_select(temp_mask[i]).view(masked_lengths[i],-1)
-					except:
-						pdb.set_trace()
-					masked_tag_list[i,:masked_lengths[i]] = tag_list[i].masked_select(select_mask[i])
-					crf_mask[i,:masked_lengths[i]] = mask[i].masked_select(select_mask[i])
-
-				forward_score = self._forward_alg(masked_features, masked_lengths)
-				gold_score = self._score_sentence(masked_features, masked_tag_list, masked_lengths, mask=crf_mask)
-			else:
-				forward_score = self._forward_alg(features, lengths)
-				gold_score = self._score_sentence(features, tag_list, torch.tensor(lengths), mask=mask)
-			unlabeled_mask = torch.ones_like(forward_score)
-			for idx, sentence in enumerate(sentences):
-				if (hasattr(sentence, 'is_unlabel') and sentence.is_unlabel):
-					unlabeled_mask[idx] = 0 
+		
+		if self.use_crf:
+			forward_score = self._forward_alg(features, lengths)
+			gold_score = self._score_sentence(features, tag_list, torch.tensor(lengths), mask=mask)
 			score = forward_score - gold_score
-			if unlabeled_mask.sum() == 0:
-				score = 0 
-			elif 0 in unlabeled_mask:
-				# pdb.set_trace()
-				score = score.sum()/unlabeled_mask.sum()
-			else:
-				score = score.mean()
+			score = score.mean()
 		# elif self.use_mfvi:
 		#     token_feats=self.sent_feats
 		#     unary_score=features
@@ -2539,7 +2040,22 @@ class FastSequenceTagger(SequenceTagger):
 				if self.unlabel_entropy_loss:
 					assert 0, "not defined!"
 				score = score.sum()/mask.sum()
-		
+		if self.posterior_constraint:
+			# student forward-backward score
+			
+			forward_var = self._forward_alg(features, lengths, distill_mode=True)
+			backward_var = self._backward_alg(features, lengths)
+			# forward_var = self.forward_var
+			forward_backward_score = (forward_var + backward_var) * mask.unsqueeze(-1)
+			# fwbw_probability = F.softmax(forward_backward_score,dim=-1)
+			posterior_score = torch.nn.functional.cross_entropy(forward_backward_score.view(-1,forward_backward_score.shape[-1]), tag_list.view(-1,), reduction='none') * mask.view(-1,)
+			if self.sentence_level_loss:
+				posterior_score = posterior_score.sum()/features.shape[0]
+			else:
+				posterior_score = posterior_score.sum()/mask.sum()
+			
+			
+			score = (1-self.posterior_interpolation) * score + self.posterior_interpolation * posterior_score
 		if self.unlabel_entropy_loss:
 			entropy = (self.entropy_loss(features)*self.mask[:,:,None]).sum([-1,-2])
 
@@ -2553,7 +2069,6 @@ class FastSequenceTagger(SequenceTagger):
 
 	def entropy_loss(self,distribution):
 		return distribution.softmax(-1)*distribution.log_softmax(-1)
-
 	def _score_sentence(self, feats, tags, lens_,mask=None):
 		start = torch.tensor(
 			[self.tag_dictionary.get_idx_for_item(START_TAG)], device=flair.device
@@ -2572,10 +2087,7 @@ class FastSequenceTagger(SequenceTagger):
 		transition_mask2=torch.ones(mask.shape[0],mask.shape[1]+1).type_as(mask)
 		transition_mask2[:,:-1]=mask
 		transition_mask2[:,-1]=0
-		try:
-			pad_stop_tags = pad_stop_tags.cuda()*transition_mask2.long()+(1-transition_mask2.long())*self.tag_dictionary.get_idx_for_item(STOP_TAG)
-		except:
-			pdb.set_trace()
+		pad_stop_tags = pad_stop_tags.cuda()*transition_mask2.long()+(1-transition_mask2.long())*self.tag_dictionary.get_idx_for_item(STOP_TAG)
 		
 		my_emission=torch.gather(feats,2,tags.unsqueeze(-1))*mask.unsqueeze(-1)
 		
@@ -2609,7 +2121,6 @@ class FastSequenceTagger(SequenceTagger):
 		out_path: Path = None,
 		embeddings_storage_mode: str = "cpu",
 		prediction_mode = False,
-		speed_test = False,
 	) -> (Result, float):
 		with torch.no_grad():
 			eval_loss = 0
@@ -2619,104 +2130,61 @@ class FastSequenceTagger(SequenceTagger):
 			metric = Metric("Evaluation")
 
 			lines: List[str] = []
-			if out_path is not None:
-				outfile = open(out_path, "w", encoding="utf-8")
-			if speed_test:
-				start_time = time.time()
 			for batch in data_loader:
 				batch_no += 1
 
 				with torch.no_grad():
-					# pdb.set_trace()
-					features = self.forward(batch,prediction_mode=prediction_mode)
-					if not speed_test:
-						mask=self.mask
-						loss = self._calculate_loss(features, batch, mask)
+					features = self.forward(batch)
+					mask=self.mask
+					loss = self._calculate_loss(features, batch, mask)
 					tags, _ = self._obtain_labels(features, batch)
-				if not speed_test:
-					eval_loss += loss
 
-					for (sentence, sent_tags) in zip(batch, tags):
-						for (token, tag) in zip(sentence.tokens, sent_tags):
-							token: Token = token
-							token.add_tag_label("predicted", tag)
+				eval_loss += loss
 
-							# append both to file for evaluation
-							eval_line = "{} {} {} {}\n".format(
-								token.text,
-								token.get_tag(self.tag_type).value,
-								tag.value,
-								tag.score,
-							)
-							# lines.append(eval_line)
-							if out_path is not None:
-								outfile.write(eval_line)
-						# lines.append("\n")
-						if out_path is not None:
-							outfile.write("\n")
-					for sentence in batch:
-						# make list of gold tags
-						gold_tags = [
-							(tag.tag, str(tag)) for tag in sentence.get_spans(self.tag_type)
-						]
-						# make list of predicted tags
-						predicted_tags = [
-							(tag.tag, str(tag)) for tag in sentence.get_spans("predicted")
-						]
-						if self.remove_x:
-							
+				for (sentence, sent_tags) in zip(batch, tags):
+					for (token, tag) in zip(sentence.tokens, sent_tags):
+						token: Token = token
+						token.add_tag_label("predicted", tag)
 
-							# gold_tags_info = [[t.idx for t in tag.tokens] for tag in sentence.get_spans(self.tag_type)]
-							predicted_tags_info = [[t.idx for t in tag.tokens] for tag in sentence.get_spans("predicted")]
-							new_predicted_tags = []
-							for tag_idx, tags in enumerate(predicted_tags):
-								flag = 0
-								# stride=ast.literal_eval(re.match('.*\-span (\[.*\])\:.*',tags[1]).group(1))
-								stride = predicted_tags_info[tag_idx]
-								for val in stride:
-									if sentence[val-1].get_tag(self.tag_type).value == 'S-X':
-										flag = 1
-										break
-								if not flag:
-									# new_gold_tags.append(tags)
-									new_predicted_tags.append(tags)
-							predicted_tags = new_predicted_tags
-							new_gold_tags = [x for x in gold_tags if x[0] != 'X']
-							gold_tags = new_gold_tags
+						# append both to file for evaluation
+						eval_line = "{} {} {} {}\n".format(
+							token.text,
+							token.get_tag(self.tag_type).value,
+							tag.value,
+							tag.score,
+						)
+						lines.append(eval_line)
+					lines.append("\n")
+				for sentence in batch:
+					# make list of gold tags
+					gold_tags = [
+						(tag.tag, str(tag)) for tag in sentence.get_spans(self.tag_type)
+					]
+					# make list of predicted tags
+					predicted_tags = [
+						(tag.tag, str(tag)) for tag in sentence.get_spans("predicted")
+					]
 
-						# check for true positives, false positives and false negatives
-						for tag, prediction in predicted_tags:
+					# check for true positives, false positives and false negatives
+					for tag, prediction in predicted_tags:
+						if (tag, prediction) in gold_tags:
+							metric.add_tp(tag)
+						else:
+							metric.add_fp(tag)
 
-							if (tag, prediction) in gold_tags:
-								metric.add_tp(tag)
-							else:
-								metric.add_fp(tag)
+					for tag, gold in gold_tags:
+						if (tag, gold) not in predicted_tags:
+							metric.add_fn(tag)
+						else:
+							metric.add_tn(tag)
 
-						for tag, gold in gold_tags:
-							if (tag, gold) not in predicted_tags:
-								metric.add_fn(tag)
-							else:
-								metric.add_tn(tag)
-
-						# pdb.set_trace()
-					if len(data_loader)<10:
-						modulo = len(data_loader)
-					else:
-						modulo = len(data_loader)//10
-					if prediction_mode and batch_no % (modulo) == 0:
-						log.info(f"{batch_no}/{len(data_loader)}")
 				store_embeddings(batch, embeddings_storage_mode)
-				if embeddings_storage_mode == "none" and hasattr(batch,'features'):
-					del batch.features
-			if speed_test:
-				end_time = time.time()
-				print(data_loader.num_examples/(end_time-start_time))
+
 			eval_loss /= batch_no
+
 			if out_path is not None:
-				outfile.close()
-			# if out_path is not None:
-			#   with open(out_path, "w", encoding="utf-8") as outfile:
-			#       outfile.write("".join(lines))
+				with open(out_path, "w", encoding="utf-8") as outfile:
+					outfile.write("".join(lines))
 
 			detailed_result = (
 				f"\nMICRO_AVG: acc {metric.micro_avg_accuracy()} - f1-score {metric.micro_avg_f_score()}"
@@ -2775,7 +2243,7 @@ class FastSequenceTagger(SequenceTagger):
 
 					if self.distill_prob:
 						# from prob to log
-						features=(teacher_features+1e-100*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
+						features=(teacher_features+1e-12*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
 					else:
 						features=teacher_features
 					loss = self._calculate_loss(features, batch, mask)
@@ -2849,9 +2317,6 @@ class FastSequenceTagger(SequenceTagger):
 			)
 
 			return result, eval_loss
-
-	def get_state(self,):
-		return None
 	# def save(self, model_file: Union[str, Path]):
 	#     """
 	#     Saves the current model to the provided file.

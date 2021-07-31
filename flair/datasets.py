@@ -1,6 +1,6 @@
 import os, csv
-import json
 from abc import abstractmethod
+
 from torch.utils.data import Dataset, random_split
 from typing import List, Dict, Union
 import re
@@ -13,9 +13,8 @@ from torch.utils.data.dataset import Subset, ConcatDataset
 import flair
 from flair.data import Sentence, Corpus, Token, FlairDataset
 from flair.file_utils import cached_path
+from tqdm import tqdm
 import pdb
-
-from flair.image_encoder import *
 
 log = logging.getLogger("flair")
 
@@ -31,7 +30,7 @@ class ColumnCorpus(Corpus):
         tag_to_bioes=None,
         comment_symbol: str = None,
         in_memory: bool = True,
-    ):
+        ):
         """
         Instantiates a Corpus from CoNLL column-formatted task data such as CoNLL03 or CoNLL2000.
 
@@ -55,14 +54,14 @@ class ColumnCorpus(Corpus):
             test_file = data_folder / test_file
         if dev_file is not None:
             dev_file = data_folder / dev_file
-
+        # pdb.set_trace()
         # automatically identify train / test / dev files
         if train_file is None:
             for file in data_folder.iterdir():
                 file_name = file.name
-                if file_name.endswith(".gz") or file_name.endswith(".swp") or file_name.endswith(".pkl"):
+                if file_name.endswith(".gz"):
                     continue
-                if "train" in file_name:
+                if "train" in file_name and not "54019" in file_name:
                     train_file = file
                 if "dev" in file_name:
                     dev_file = file
@@ -85,6 +84,13 @@ class ColumnCorpus(Corpus):
         log.info("Dev: {}".format(dev_file))
         log.info("Test: {}".format(test_file))
 
+        # for ner_dp
+        self.files = [train_file, dev_file, test_file]
+        self.tag_to_bioes = tag_to_bioes
+        self.column_format = column_format
+        self.comment_symbol = comment_symbol
+        #------------------------------------------------
+
         # get train data
         train = ColumnDataset(
             train_file,
@@ -92,6 +98,7 @@ class ColumnCorpus(Corpus):
             tag_to_bioes,
             comment_symbol=comment_symbol,
             in_memory=in_memory,
+            #id2labels = self.id2labels,
         )
 
         # read in test file if exists, otherwise sample 10% of train data as test dataset
@@ -102,6 +109,7 @@ class ColumnCorpus(Corpus):
                 tag_to_bioes,
                 comment_symbol=comment_symbol,
                 in_memory=in_memory,
+                #id2labels = self.id2labels,
             )
         else:
             train_length = len(train)
@@ -118,6 +126,7 @@ class ColumnCorpus(Corpus):
                 tag_to_bioes,
                 comment_symbol=comment_symbol,
                 in_memory=in_memory,
+                #id2labels = self.id2labels,
             )
         else:
             train_length = len(train)
@@ -125,10 +134,38 @@ class ColumnCorpus(Corpus):
             splits = random_split(train, [train_length - dev_size, dev_size])
             train = splits[0]
             dev = splits[1]
-
-
         super(ColumnCorpus, self).__init__(train, dev, test, name=data_folder.name)
 
+
+
+
+
+    # generate gold ner matrix for each sentence in dataset.
+    def generate_ner_matrix(self):
+        self.train.generate_ner_matrix()
+        if isinstance(self.test, ColumnDataset):
+            self.test.generate_ner_matrix()
+        else:
+            pdb.set_trace()
+        if isinstance(self.dev, ColumnDataset):
+            self.dev.generate_ner_matrix()
+        else:
+            pdb.set_trace()
+
+    def get_tokens_set(self) -> set:
+        tokens_train = self.train.get_tokens_set()
+        
+        if isinstance(self.test, ColumnDataset):
+            tokens_test = self.test.get_tokens_set()
+        else:
+            pdb.set_trace()
+            tokens_test = set()
+        if isinstance(self.dev, ColumnDataset):
+            tokens_dev=self.dev.get_tokens_set()
+        else:
+            pdb.set_trace()
+            tokens_dev = set()
+        return set().union(tokens_train, tokens_test, tokens_dev)
 
 class UniversalDependenciesCorpus(Corpus):
     def __init__(
@@ -296,7 +333,6 @@ class SRL(Corpus):
         )
 
 
-
 class UD_PROJ(UniversalDependenciesCorpus):
     def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, add_root: bool = False):
 
@@ -376,56 +412,6 @@ class PTB(Corpus):
         )
 
 
-class WSJ_POS(Corpus):
-    def __init__(self, treebank: str = None, base_path: Union[str, Path] = None, in_memory: bool = True, add_root: bool = True, tag_to_bioes=None):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets" / "wsj_pos"
-        data_folder = base_path
-        # data_folder = '../Parser-v4/data/SemEval15/ptb_3.3.0'
-        # if not os.path.exists(data_folder):
-        #     os.call("git clone https://github.com/UniversalDependencies/"+treebank+" "+data_folder+"/"+treebank)
-        
-
-        # # # download data if necessary
-        # # web_path = "https://raw.githubusercontent.com/UniversalDependencies/UD_Tamil-TTB/master"
-        # # cached_path(f"{web_path}/ta_ttb-ud-dev.conllu", Path("datasets") / dataset_name)
-        # # cached_path(
-        # #     f"{web_path}/ta_ttb-ud-test.conllu", Path("datasets") / dataset_name
-        # # )
-        # # cached_path(
-        # #     f"{web_path}/ta_ttb-ud-train.conllu", Path("datasets") / dataset_name
-        # )
-        log.info("Reading data from {}".format(data_folder))
-        # log.info("Train: {}".format(data_folder/'train_modified_projective.conllu'))
-        log.info("Train: {}".format(data_folder/'train.conllu'))
-        log.info("Test: {}".format(data_folder/'test.conllu'))
-        log.info("Dev: {}".format(data_folder/'dev.conllu'))
-
-        # train = UniversalDependenciesDataset(data_folder/'train_modified_projective.conllu', in_memory=in_memory, add_root=True)
-        train = UniversalDependenciesDataset(data_folder/'train.conllu', in_memory=in_memory, add_root=True)
-        # train = UniversalDependenciesDataset(Path('test2.conll'), in_memory=in_memory, add_root=True)
-
-        # get test data
-        test = UniversalDependenciesDataset(data_folder/'test.conllu', in_memory=in_memory, add_root=True)
-        # test = UniversalDependenciesDataset(Path('test2.conll'), in_memory=in_memory, add_root=True)
-        # get dev data
-        dev = UniversalDependenciesDataset(data_folder/'dev.conllu', in_memory=in_memory, add_root=True)
-        # dev = UniversalDependenciesDataset(Path('test2.conll'), in_memory=in_memory, add_root=True)
-
-        super(WSJ_POS, self).__init__(
-            train, dev, test, name=treebank
-        )
-
-
-
 class CTB(Corpus):
     def __init__(self, treebank: str = None, base_path: Union[str, Path] = None, in_memory: bool = True, add_root: bool = True, tag_to_bioes=None):
 
@@ -473,20 +459,18 @@ class CTB(Corpus):
 
 
 class ENHANCEDUD(Corpus):
-    def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, train_file=None, test_file=None, dev_file=None, eud_path = 'enhanced_ud'):
+    def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, train_file=None, test_file=None, dev_file=None,):
 
         if type(base_path) == str:
             base_path: Path = Path(base_path)
 
         # this dataset name
         dataset_name = self.__class__.__name__.lower()
-        if 'UNREL' in treebank:
-            eud_path = eud_path+'_unrel'
-            treebank = treebank.split('-')[0]
+
         # default dataset folder is the cache root
         if not base_path:
             base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / eud_path / treebank
+        data_folder = base_path / 'enhanced_ud' / treebank
 
         if train_file is None:
             for file in data_folder.iterdir():
@@ -523,7 +507,7 @@ class ENHANCEDUD(Corpus):
         )
 
 class UNREL_ENHANCEDUD(Corpus):
-    def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, train_file=None, test_file=None, dev_file=None, eud_path = 'unrel_enhanced_ud'):
+    def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, train_file=None, test_file=None, dev_file=None,):
 
         if type(base_path) == str:
             base_path: Path = Path(base_path)
@@ -534,7 +518,7 @@ class UNREL_ENHANCEDUD(Corpus):
         # default dataset folder is the cache root
         if not base_path:
             base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / unrel_enhanced_ud / treebank
+        data_folder = base_path / 'unrel_enhanced_ud' / treebank
 
         if train_file is None:
             for file in data_folder.iterdir():
@@ -567,55 +551,6 @@ class UNREL_ENHANCEDUD(Corpus):
         dev = UniversalDependenciesDataset(dev_file, in_memory=in_memory, add_root=True)
 
         super(UNREL_ENHANCEDUD, self).__init__(
-            train, dev, test, name=treebank
-        )
-
-
-class SDP(Corpus):
-    def __init__(self, treebank: str, base_path: Union[str, Path] = None, in_memory: bool = True, train_file=None, test_file=None, dev_file=None,):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / 'sdp' / treebank
-
-        if train_file is None:
-            for file in data_folder.iterdir():
-                file_name = file.name
-                if "train" in file_name:
-                    train_file = file
-                if "test" in file_name:
-                    test_file = file
-                if "dev" in file_name:
-                    dev_file = file
-                if "testa" in file_name:
-                    dev_file = file
-                if "testb" in file_name:
-                    test_file = file
-            if test_file is None:
-                test_file = dev_file
-
-        log.info("Reading data from {}".format(data_folder))
-        log.info("Train: {}".format(train_file))
-        log.info("Test: {}".format(test_file))
-        log.info("Dev: {}".format(dev_file))
-
-        # get train data
-        train = UniversalDependenciesDataset(train_file, in_memory=in_memory, add_root=True)
-
-        # get test data
-        test = UniversalDependenciesDataset(test_file, in_memory=in_memory, add_root=True)
-
-        # get dev data
-        dev = UniversalDependenciesDataset(dev_file, in_memory=in_memory, add_root=True)
-
-        super(SDP, self).__init__(
             train, dev, test, name=treebank
         )
 
@@ -859,6 +794,7 @@ class ColumnDataset(FlairDataset):
         tag_to_bioes: str = None,
         comment_symbol: str = None,
         in_memory: bool = True,
+        # id2labels: dict = None,
     ):
         """
         Instantiates a column dataset (typically used for sequence labeling or word-level prediction).
@@ -869,12 +805,20 @@ class ColumnDataset(FlairDataset):
         :param comment_symbol: if set, lines that begin with this symbol are treated as comments
         :param in_memory: If set to True, the dataset is kept in memory as Sentence objects, otherwise does disk reads
         """
+        # if not path_to_column_file.exists():
+        #     pdb.set_trace()
+        
         assert path_to_column_file.exists()
         self.path_to_column_file = path_to_column_file
         self.tag_to_bioes = tag_to_bioes
         self.column_name_map = column_name_map
         self.comment_symbol = comment_symbol
 
+        #----------------------------
+        # self.id2labels = id2labels
+        #----------------------------
+
+        
         # store either Sentence objects in memory, or only file offsets
         self.in_memory = in_memory
         if self.in_memory:
@@ -906,10 +850,10 @@ class ColumnDataset(FlairDataset):
 
         sentence: Sentence = Sentence()
         with open(str(self.path_to_column_file), encoding=encoding) as f:
-
+            
             line = f.readline()
             position = 0
-            # pdb.set_trace()
+
             while line:
 
                 if self.comment_symbol is not None and line.startswith(comment_symbol):
@@ -917,6 +861,7 @@ class ColumnDataset(FlairDataset):
                     continue
 
                 if line.isspace():
+                    
                     if len(sentence) > 0:
                         sentence.infer_space_after()
                         if self.in_memory:
@@ -932,15 +877,15 @@ class ColumnDataset(FlairDataset):
                     sentence: Sentence = Sentence()
 
                 else:
-                    fields: List[str] = re.split("\s+", line)
+                    fields: List[str] = re.split("\s+", line)   # fields: e.g.: ['EU', 'NNP', 'I-NP', 'B-ORG', '']
                     token = Token(fields[self.text_column])
                     for column in column_name_map:
                         if len(fields) > column:
                             if column != self.text_column:
                                 token.add_tag(
-                                    self.column_name_map[column], fields[column]
+                                    self.column_name_map[column], fields[column]    #self.column_name_map: {0: 'text', 1: 'pos', 2: 'chunk', 3: 'ner'}
                                 )
-
+                    # pdb.set_trace()
                     sentence.add_token(token)
 
                 line = f.readline()
@@ -948,14 +893,12 @@ class ColumnDataset(FlairDataset):
         if len(sentence.tokens) > 0:
             sentence.infer_space_after()
             if self.in_memory:
-                if self.tag_to_bioes is not None:
-                    sentence.convert_tag_scheme(
-                        tag_type=self.tag_to_bioes, target_scheme="iobes"
-                    )
                 self.sentences.append(sentence)
             else:
                 self.indices.append(position)
             self.total_sentence_count += 1
+
+
     @property
     def reset_sentence_count(self):
         self.total_sentence_count = len(self.sentences)
@@ -1005,6 +948,23 @@ class ColumnDataset(FlairDataset):
 
         return sentence
 
+    #------------------------------------------
+    # get ner matrix for each sentence
+    # def generate_ner_matrix(self):
+    #     labels2id = dict(zip(list(self.id2labels.values()), list(self.id2labels.keys())))
+    #     for sentence in self.sentences:
+    #         sentence.get_ner_matrix(labels2id)
+    
+    # def get_tokens_set(self) -> set:
+    #     all_tokens = set()
+    #     for sentence in self.sentences:
+    #         texts_list = []
+    #         for token in sentence.tokens:
+    #             texts_list.append(token.text)
+    #         tokens = set(texts_list)
+    #         all_tokens = all_tokens.union(tokens)
+    #     return all_tokens
+
 class UniversalDependenciesDataset(FlairDataset):
     def __init__(self, path_to_conll_file: Path, in_memory: bool = True, add_root=False, root_tag='<ROOT>',spliter='\t'):
         """
@@ -1038,9 +998,6 @@ class UniversalDependenciesDataset(FlairDataset):
                 token.add_tag("dependency", str('root'))
                 token.add_tag("enhancedud", str('0:root'))
                 token.add_tag("srl", str('0:root'))
-                token.lemma = token.tags['lemma']._value
-                token.upos = token.tags['upos']._value
-                token.pos = token.tags['pos']._value
                 sentence.add_token(token)
             while line:
                 line_count+=1
@@ -1068,9 +1025,6 @@ class UniversalDependenciesDataset(FlairDataset):
                         token.add_tag("dependency", str('root'))
                         token.add_tag("enhancedud", str('0:root'))
                         token.add_tag("srl", str('0:root'))
-                        token.lemma = token.tags['lemma']._value
-                        token.upos = token.tags['upos']._value
-                        token.pos = token.tags['pos']._value
                         sentence.add_token(token)
                 elif line.startswith("#"):
                     line = file.readline()
@@ -1105,9 +1059,7 @@ class UniversalDependenciesDataset(FlairDataset):
 
                     if len(fields) > 10 and str(fields[10]) == "Y":
                         token.add_tag("frame", str(fields[11]))
-                    token.lemma = token.tags['lemma']._value
-                    token.upos = token.tags['upos']._value
-                    token.pos = token.tags['pos']._value
+
                     sentence.add_token(token)
 
                 line = file.readline()
@@ -1169,9 +1121,7 @@ class UniversalDependenciesDataset(FlairDataset):
 
                         if len(fields) > 10 and str(fields[10]) == "Y":
                             token.add_tag("frame", str(fields[11]))
-                        token.lemma = token.tags['lemma']._value
-                        token.upos = token.tags['upos']._value
-                        token.pos = token.tags['pos']._value
+
                         sentence.add_token(token)
 
                     line = file.readline()
@@ -1438,220 +1388,13 @@ class ClassificationDataset(FlairDataset):
                 return sentence
 
 
-
-class TWITTER(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = None,
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "upos"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-        
-        super(TWITTER, self).__init__(
-            data_folder, columns, tag_to_bioes=None, in_memory=in_memory
-        )
-
-class TWITTER_NEW(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = None,
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "upos"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-        
-        super(TWITTER_NEW, self).__init__(
-            data_folder, columns, tag_to_bioes=None, in_memory=in_memory
-        )
-
-
-class ARK(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = None,
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "upos"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-        
-        super(ARK, self).__init__(
-            data_folder, columns, tag_to_bioes=None, in_memory=in_memory
-        )
-
-
-
-class RITTER(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = None,
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "upos"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-        
-        super(RITTER, self).__init__(
-            data_folder, columns, tag_to_bioes=None, in_memory=in_memory
-        )
-
-
-class RITTER_NEW(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = None,
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "upos"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-        
-        super(RITTER_NEW, self).__init__(
-            data_folder, columns, tag_to_bioes=None, in_memory=in_memory
-        )
-
-class TWEEBANK(UniversalDependenciesCorpus):
-    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        super(TWEEBANK, self).__init__(data_folder, in_memory=in_memory)
-
-class TWEEBANK_NEW(UniversalDependenciesCorpus):
-    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        super(TWEEBANK_NEW, self).__init__(data_folder, in_memory=in_memory)
-
 class CONLL_03(ColumnCorpus):
     def __init__(
         self,
         base_path: Union[str, Path] = None,
         tag_to_bioes: str = "ner",
         in_memory: bool = True,
-    ):
+        ):
         """
         Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
         Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
@@ -1686,14 +1429,10 @@ class CONLL_03(ColumnCorpus):
 
         super(CONLL_03, self).__init__(
             data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
+            )
 
 
-class CONLL_03_NEW(CONLL_03):
-    def __init__(self,**kwargs):
-        super(CONLL_03_NEW, self).__init__(
-            **kwargs
-        )
+
 
 class CONLL_03_ENGLISH(ColumnCorpus):
     def __init__(
@@ -1737,138 +1476,6 @@ class CONLL_03_ENGLISH(ColumnCorpus):
         super(CONLL_03_ENGLISH, self).__init__(
             data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
         )
-
-
-class CONLL_03_ENGLISH_DOC(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_03_ENGLISH_DOC, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-class CONLL_03_ENGLISH_CASED(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_03_ENGLISH_CASED, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-class CONLL_03_ENGLISH_DOC_CASED(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_03_ENGLISH_DOC_CASED, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
 
 class CONLL_03_VIETNAMESE(ColumnCorpus):
     def __init__(
@@ -2002,57 +1609,6 @@ class CONLL_03_GERMAN(ColumnCorpus):
         )
 
 
-class CONLL_03_GERMAN_NEW(CONLL_03_GERMAN):
-    def __init__(self,**kwargs):
-        super(CONLL_03_GERMAN_NEW, self).__init__(
-            **kwargs
-        )
-
-
-
-class CONLL_06_GERMAN(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus for German. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'lemma', 'pos' or 'np' to predict
-        word lemmas, POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ner"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_06_GERMAN, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
 class CONLL_03_DUTCH(ColumnCorpus):
     def __init__(
         self,
@@ -2069,6 +1625,7 @@ class CONLL_03_DUTCH(ColumnCorpus):
         POS tags instead
         :param in_memory: If True, keeps dataset in memory giving speedups in training.
         """
+        
         if type(base_path) == str:
             base_path: Path = Path(base_path)
 
@@ -2079,12 +1636,14 @@ class CONLL_03_DUTCH(ColumnCorpus):
         dataset_name = self.__class__.__name__.lower()
 
         # default dataset folder is the cache root
+        
         if not base_path:
             base_path = Path(flair.cache_root) / "datasets"
         data_folder = base_path / dataset_name
 
         # download data if necessary
         conll_02_path = "https://www.clips.uantwerpen.be/conll2002/ner/data/"
+        # pdb.set_trace()
         cached_path(f"{conll_02_path}ned.testa", Path("datasets") / dataset_name)
         cached_path(f"{conll_02_path}ned.testb", Path("datasets") / dataset_name)
         cached_path(f"{conll_02_path}ned.train", Path("datasets") / dataset_name)
@@ -2092,13 +1651,6 @@ class CONLL_03_DUTCH(ColumnCorpus):
         super(CONLL_03_DUTCH, self).__init__(
             data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
         )
-
-class CONLL_03_DUTCH_NEW(CONLL_03_DUTCH):
-    def __init__(self,**kwargs):
-        super(CONLL_03_DUTCH_NEW, self).__init__(
-            **kwargs
-        )
-
 
 
 class CONLL_03_SPANISH(ColumnCorpus):
@@ -2140,240 +1692,6 @@ class CONLL_03_SPANISH(ColumnCorpus):
             data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
         )
 
-class CONLL_03_SPANISH_NEW(CONLL_03_SPANISH):
-    def __init__(self,**kwargs):
-        super(CONLL_03_SPANISH_NEW, self).__init__(
-            **kwargs
-        )
-
-
-
-#------------------------------------------------------------
-#for NER as dp
-class CONLL_03_DP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner_dp",
-        in_memory: bool = True,
-        ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        #------------------
-        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner_dp"}
-        self.columns = columns
-        # this dataset name
-        #---------------
-        dataset_name = 'conll_03_english'
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_03_DP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-            )
-
-
-
-#------------------------KD-------------------------------------------
-class CONLL_03_GERMAN_DP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner_dp",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus for German. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'lemma', 'pos' or 'np' to predict
-        word lemmas, POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "lemma", 2: "pos", 3: "chunk", 4: "ner_dp"}
-        self.columns = columns
-        # this dataset name
-        # dataset_name = self.__class__.__name__.lower()
-        dataset_name = 'conll_03_german_new'
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_03_GERMAN_DP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-class CONLL_06_GERMAN_DP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner_dp",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus for German. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'lemma', 'pos' or 'np' to predict
-        word lemmas, POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ner_dp"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = 'conll_06_german'
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # check if data there
-        if not data_folder.exists():
-            log.warning("-" * 100)
-            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
-            log.warning(
-                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
-            )
-            log.warning("-" * 100)
-
-        super(CONLL_06_GERMAN_DP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-class CONLL_03_DUTCH_DP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner_dp",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus for Dutch. The first time you call this constructor it will automatically
-        download the dataset.
-        :param base_path: Default is None, meaning that corpus gets auto-downloaded and loaded. You can override this
-        to point to a different folder but typically this should not be necessary.
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' to predict
-        POS tags instead
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "pos", 2: "ner_dp"}
-        self.columns = columns
-        # this dataset name
-        # dataset_name = self.__class__.__name__.lower()
-        dataset_name = 'conll_03_dutch_new'
-
-        # default dataset folder is the cache root
-        
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # download data if necessary
-        conll_02_path = "https://www.clips.uantwerpen.be/conll2002/ner/data/"
-        # pdb.set_trace()
-        cached_path(f"{conll_02_path}ned.testa", Path("datasets") / dataset_name)
-        cached_path(f"{conll_02_path}ned.testb", Path("datasets") / dataset_name)
-        cached_path(f"{conll_02_path}ned.train", Path("datasets") / dataset_name)
-
-        super(CONLL_03_DUTCH_DP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-class CONLL_03_SPANISH_DP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner_dp",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus for Spanish. The first time you call this constructor it will automatically
-        download the dataset.
-        :param base_path: Default is None, meaning that corpus gets auto-downloaded and loaded. You can override this
-        to point to a different folder but typically this should not be necessary.
-        :param tag_to_bioes: NER by default, should not be changed
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ner_dp"}
-        self.columns = columns
-        # this dataset name
-        # dataset_name = self.__class__.__name__.lower()
-        dataset_name = 'conll_03_spanish_new'
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        # download data if necessary
-        conll_02_path = "https://www.clips.uantwerpen.be/conll2002/ner/data/"
-        cached_path(f"{conll_02_path}esp.testa", Path("datasets") / dataset_name)
-        cached_path(f"{conll_02_path}esp.testb", Path("datasets") / dataset_name)
-        cached_path(f"{conll_02_path}esp.train", Path("datasets") / dataset_name)
-
-        super(CONLL_03_SPANISH_DP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-
-
 class CONLL_03_IND(CONLL_03):
     pass
 
@@ -2397,8 +1715,7 @@ class CONLL_03_TOY(CONLL_03):
             base_path, tag_to_bioes=tag_to_bioes, in_memory=in_memory
         )
 
-
-class CONLL_03_GERMAN_TOY(CONLL_03_GERMAN):
+class CONLL_03_GERMAN_TOY(CONLL_03):
     def __init__(
         self,
         base_path: Union[str, Path] = None,
@@ -2507,29 +1824,6 @@ class PANX(ColumnCorpus):
                                                 tag_to_bioes=tag_to_bioes,
                                                 )
 
-
-class PANX_DP(ColumnCorpus):
-    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='en',tag_to_bioes='ner_dp'):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        # dataset_name = self.__class__.__name__.lower()
-        dataset_name = 'panx'
-        columns = {0: "text", 1: "ner_dp"}
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / Path('panxdataset')/ Path(lang)
-
-        super(PANX_DP, self).__init__(data_folder, columns, in_memory=in_memory,
-                                                train_file=data_folder/('wikiann-'+lang+'_train.bio'),
-                                                test_file=data_folder/('wikiann-'+lang+'_test.bio'),
-                                                dev_file=data_folder/('wikiann-'+lang+'_dev.bio'),
-                                                tag_to_bioes=tag_to_bioes,
-                                                )
-
 class ATIS(ColumnCorpus):
     def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='en',tag_to_bioes='atis'):
 
@@ -2591,30 +1885,6 @@ class FRQUERY(ColumnCorpus):
                                                 tag_to_bioes=tag_to_bioes,
                                                 )
 
-class ICBU(ColumnCorpus):
-    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='all.csv',tag_to_bioes='ner'):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-        columns = {0: "text", 1: "ner"}
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / Path('icbu')
-
-        super(ICBU, self).__init__(data_folder, columns, in_memory=in_memory,
-                                                # train_file=data_folder/(lang+'.train'),
-                                                # test_file=data_folder/(lang+'.test'),
-                                                # dev_file=data_folder/(lang+'.dev'),
-                                                train_file=data_folder/('train.txt'),
-                                                test_file=data_folder/('test.txt'),
-                                                dev_file=data_folder/('dev.txt'),
-                                                tag_to_bioes=tag_to_bioes,
-                                                )
-
 
 class ONTONOTE_ENG(ColumnCorpus):
     def __init__(
@@ -2662,7 +1932,7 @@ class UNLABEL(ColumnCorpus):
         # default dataset folder is the cache root
         if not base_path:
             base_path = Path(flair.cache_root) / "datasets"
-        columns = {0: "text", 1: "gold_ner", 2:"ner", 3:"score"}
+        columns = {0: "text",  3:"ner"}
         data_folder = base_path / Path('unlabeled_data')
         super(UNLABEL, self).__init__(data_folder, columns, in_memory=in_memory,
                                                 train_file=data_folder/('train.'+modelname+'.'+lang+'.conllu') if extra is None else data_folder/('train.'+modelname+'.'+lang+'.'+extra+'.conllu'),
@@ -2746,7 +2016,6 @@ class PANXPRED(ColumnCorpus):
         # this dataset name
         dataset_name = self.__class__.__name__.lower()
         columns = {0: "text", 1: "ner"}
-        # columns = {0: "text", 1: "gold_ner", 2:"ner", 3:"score"}
         # default dataset folder is the cache root
         if not base_path:
             base_path = Path(flair.cache_root) / "datasets"
@@ -2756,31 +2025,8 @@ class PANXPRED(ColumnCorpus):
                                                 train_file=data_folder/('wikiann-'+lang+'_train.bio'),
                                                 test_file=base_path/Path('panxdataset')/ Path(lang) /('wikiann-'+lang+'_test.bio'),
                                                 dev_file=base_path/Path('panxdataset')/ Path(lang) /('wikiann-'+lang+'_dev.bio'),
-                                                tag_to_bioes=None,
+                                                tag_to_bioes=tag_to_bioes,
                                                 )
-
-class PANXPRED2(ColumnCorpus):
-    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='en',tag_to_bioes='ner'):
-
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-        columns = {0: "text", 1: "ner"}
-        # columns = {0: "text", 1: "gold_ner", 2:"ner", 3:"score"}
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / Path('unlabeledpanx2')/ Path(lang)
-
-        super(PANXPRED2, self).__init__(data_folder, columns, in_memory=in_memory,
-                                                train_file=data_folder/('wikiann-'+lang+'_train.bio'),
-                                                test_file=base_path/Path('panxdataset')/ Path(lang) /('wikiann-'+lang+'_test.bio'),
-                                                dev_file=base_path/Path('panxdataset')/ Path(lang) /('wikiann-'+lang+'_dev.bio'),
-                                                tag_to_bioes=None,
-                                                )
-
 
 class SEMEVAL16(ColumnCorpus):
     def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='en',tag_to_bioes='ner'):
@@ -2807,111 +2053,6 @@ class SEMEVAL16(ColumnCorpus):
                                                 dev_file=data_folder/dev_file,
                                                 tag_to_bioes=tag_to_bioes,
                                                 )
-
-
-class SEMEVAL14_LAPTOP(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ast"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        super(SEMEVAL14_LAPTOP, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-class SEMEVAL14_RESTAURANT(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ast"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        super(SEMEVAL14_RESTAURANT, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
-
-
-class SEMEVAL15_RESTAURANT(ColumnCorpus):
-    def __init__(
-        self,
-        base_path: Union[str, Path] = None,
-        tag_to_bioes: str = "ner",
-        in_memory: bool = True,
-    ):
-        """
-        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
-        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
-        the base_path parameter in the constructor to this folder
-        :param base_path: Path to the CoNLL-03 corpus on your machine
-        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
-        POS tags or chunks respectively
-        :param in_memory: If True, keeps dataset in memory giving speedups in training.
-        """
-        if type(base_path) == str:
-            base_path: Path = Path(base_path)
-
-        # column format
-        columns = {0: "text", 1: "ast"}
-        self.columns = columns
-        # this dataset name
-        dataset_name = self.__class__.__name__.lower()
-
-        # default dataset folder is the cache root
-        if not base_path:
-            base_path = Path(flair.cache_root) / "datasets"
-        data_folder = base_path / dataset_name
-
-        super(SEMEVAL15_RESTAURANT, self).__init__(
-            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
-        )
 
 
 class CALCS(ColumnCorpus):
@@ -4783,3 +3924,310 @@ class CoupleDataset:
         return self.corpus1[index],self.corpus2[index]
     def is_in_memory(self) -> bool:
         return self.corpus1.in_memory
+
+
+
+#------------------------------------------------------------
+#for NER as dp
+class CONLL_03_DP(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner_dp",
+        in_memory: bool = True,
+        ):
+        """
+        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
+        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
+        the base_path parameter in the constructor to this folder
+        :param base_path: Path to the CoNLL-03 corpus on your machine
+        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
+        POS tags or chunks respectively
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        #------------------
+        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner_dp"}
+        self.columns = columns
+        # this dataset name
+        #---------------
+        dataset_name = 'conll_03'
+
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # check if data there
+        if not data_folder.exists():
+            log.warning("-" * 100)
+            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
+            log.warning(
+                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
+            )
+            log.warning("-" * 100)
+
+        super(CONLL_03_DP, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+            )
+
+class CONLL_03_DP_TEST(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner_dp",
+        in_memory: bool = True,
+        ):
+        """
+        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
+        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
+        the base_path parameter in the constructor to this folder
+        :param base_path: Path to the CoNLL-03 corpus on your machine
+        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
+        POS tags or chunks respectively
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        #------------------
+        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner_dp"}
+        self.columns = columns
+        # this dataset name
+        #---------------
+        dataset_name = 'conll_03_test'
+
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # check if data there
+        if not data_folder.exists():
+            log.warning("-" * 100)
+            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
+            log.warning(
+                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
+            )
+            log.warning("-" * 100)
+
+        super(CONLL_03_DP_TEST, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+            )
+
+#-----30% data of conll_03-------------
+class CONLL_03_30(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner",
+        in_memory: bool = True,
+        ):
+        """
+        Initialize the CoNLL-03 corpus. This is only possible if you've manually downloaded it to your machine.
+        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
+        the base_path parameter in the constructor to this folder
+        :param base_path: Path to the CoNLL-03 corpus on your machine
+        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' or 'np' to predict
+        POS tags or chunks respectively
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        columns = {0: "text", 1: "pos", 2: "chunk", 3: "ner"}
+        self.columns = columns
+        # this dataset name
+        dataset_name = self.__class__.__name__.lower()
+
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # check if data there
+        if not data_folder.exists():
+            log.warning("-" * 100)
+            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
+            log.warning(
+                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
+            )
+            log.warning("-" * 100)
+
+        super(CONLL_03_30, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+            )
+
+
+#------------------------KD-------------------------------------------
+class CONLL_03_GERMAN_DP(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner_dp",
+        in_memory: bool = True,
+    ):
+        """
+        Initialize the CoNLL-03 corpus for German. This is only possible if you've manually downloaded it to your machine.
+        Obtain the corpus from https://www.clips.uantwerpen.be/conll2003/ner/ and put it into some folder. Then point
+        the base_path parameter in the constructor to this folder
+        :param base_path: Path to the CoNLL-03 corpus on your machine
+        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'lemma', 'pos' or 'np' to predict
+        word lemmas, POS tags or chunks respectively
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        columns = {0: "text", 1: "lemma", 2: "pos", 3: "chunk", 4: "ner_dp"}
+        self.columns = columns
+        # this dataset name
+        # dataset_name = self.__class__.__name__.lower()
+        dataset_name = 'conll_03_german'
+
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # check if data there
+        if not data_folder.exists():
+            log.warning("-" * 100)
+            log.warning(f'ACHTUNG: CoNLL-03 dataset not found at "{data_folder}".')
+            log.warning(
+                'Instructions for obtaining the data can be found here: https://www.clips.uantwerpen.be/conll2003/ner/"'
+            )
+            log.warning("-" * 100)
+
+        super(CONLL_03_GERMAN_DP, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+        )
+
+
+class CONLL_03_DUTCH_DP(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner_dp",
+        in_memory: bool = True,
+    ):
+        """
+        Initialize the CoNLL-03 corpus for Dutch. The first time you call this constructor it will automatically
+        download the dataset.
+        :param base_path: Default is None, meaning that corpus gets auto-downloaded and loaded. You can override this
+        to point to a different folder but typically this should not be necessary.
+        :param tag_to_bioes: NER by default, need not be changed, but you could also select 'pos' to predict
+        POS tags instead
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        columns = {0: "text", 1: "pos", 2: "ner_dp"}
+        self.columns = columns
+        # this dataset name
+        # dataset_name = self.__class__.__name__.lower()
+        dataset_name = 'conll_03_dutch'
+
+        # default dataset folder is the cache root
+        
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # download data if necessary
+        conll_02_path = "https://www.clips.uantwerpen.be/conll2002/ner/data/"
+        # pdb.set_trace()
+        cached_path(f"{conll_02_path}ned.testa", Path("datasets") / dataset_name)
+        cached_path(f"{conll_02_path}ned.testb", Path("datasets") / dataset_name)
+        cached_path(f"{conll_02_path}ned.train", Path("datasets") / dataset_name)
+
+        super(CONLL_03_DUTCH_DP, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+        )
+
+
+class CONLL_03_SPANISH_DP(ColumnCorpus):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner_dp",
+        in_memory: bool = True,
+    ):
+        """
+        Initialize the CoNLL-03 corpus for Spanish. The first time you call this constructor it will automatically
+        download the dataset.
+        :param base_path: Default is None, meaning that corpus gets auto-downloaded and loaded. You can override this
+        to point to a different folder but typically this should not be necessary.
+        :param tag_to_bioes: NER by default, should not be changed
+        :param in_memory: If True, keeps dataset in memory giving speedups in training.
+        """
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # column format
+        columns = {0: "text", 1: "ner_dp"}
+        self.columns = columns
+        # this dataset name
+        # dataset_name = self.__class__.__name__.lower()
+        dataset_name = 'conll_03_spanish'
+
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / dataset_name
+
+        # download data if necessary
+        conll_02_path = "https://www.clips.uantwerpen.be/conll2002/ner/data/"
+        cached_path(f"{conll_02_path}esp.testa", Path("datasets") / dataset_name)
+        cached_path(f"{conll_02_path}esp.testb", Path("datasets") / dataset_name)
+        cached_path(f"{conll_02_path}esp.train", Path("datasets") / dataset_name)
+
+        super(CONLL_03_SPANISH_DP, self).__init__(
+            data_folder, columns, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+        )
+
+
+class CONLL_03_DUTCH_TOY(CONLL_03_DUTCH):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = None,
+        tag_to_bioes: str = "ner",
+        in_memory: bool = True,
+    ):
+        super(CONLL_03_DUTCH_TOY, self).__init__(
+            base_path, tag_to_bioes=tag_to_bioes, in_memory=in_memory
+        )
+
+
+class PANX_DP(ColumnCorpus):
+    def __init__(self, base_path: Union[str, Path] = None, in_memory: bool = True, lang='en',tag_to_bioes='ner_dp'):
+
+        if type(base_path) == str:
+            base_path: Path = Path(base_path)
+
+        # this dataset name
+        # dataset_name = self.__class__.__name__.lower()
+        dataset_name = 'panx'
+        columns = {0: "text", 1: "ner_dp"}
+        # default dataset folder is the cache root
+        if not base_path:
+            base_path = Path(flair.cache_root) / "datasets"
+        data_folder = base_path / Path('panxdataset')/ Path(lang)
+
+        super(PANX_DP, self).__init__(data_folder, columns, in_memory=in_memory,
+                                                train_file=data_folder/('wikiann-'+lang+'_train.bio'),
+                                                test_file=data_folder/('wikiann-'+lang+'_test.bio'),
+                                                dev_file=data_folder/('wikiann-'+lang+'_dev.bio'),
+                                                tag_to_bioes=tag_to_bioes,
+                                                )
+
+

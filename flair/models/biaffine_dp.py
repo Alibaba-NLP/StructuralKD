@@ -1,288 +1,15 @@
-import numpy as np
-import time
 import torch
 import torch.nn as nn
-# from flair.parser.modules.dropout import SharedDropout
 
 from torch.nn.modules.rnn import apply_permutation
 from torch.nn.utils.rnn import PackedSequence
-from torch.nn.utils.rnn import (pack_padded_sequence, pad_packed_sequence,
-								pad_sequence)
-
-import flair.ner_dp_utils as utils
-from flair.ner_dp_utils import get_shape, train_dataloader, eval_dataloader
-
-
-import pdb
-
-
-class BiaffineNERModel(nn.Module):
-	def __init__(self, config, model_sizes):
-		super().__init__()
-		self.config = config
-		self.device = torch.device(config['device'])
-		# self.context_embeddings = util.EmbeddingDictionary(config["context_embeddings"])
-		
-		
-		self.char_dict = utils.load_char_dict(config["char_vocab_path"])
-		self.char_emb_size = config["char_embedding_size"]
-		self.char_filter_widths = config['filter_widths']
-		self.char_filter_size = config['filter_size']
-		self.char_wordemb_size = len(self.char_filter_widths)*self.char_filter_size
-		self.char_embbedings = torch.nn.Embedding(num_embeddings=len(self.char_dict), embedding_dim=self.char_emb_size)
-
-		self.context_embeddings_size = model_sizes[0] + self.char_wordemb_size
-
-		self.eval_data = None  # Load eval data lazily.
-		self.ner_types = self.config['ner_types']
-		self.ner_maps = {ner: (i + 1) for i, ner in enumerate(self.ner_types)}
-		self.num_types = len(self.ner_types)
-
-		self.dropout = self.config["dropout_rate"]
-		# self.lexical_Dropout = torch.nn.Dropout(p=config['lexical_dropout_rate'])
-		self.lstm_dropout = self.config["lstm_dropout_rate"]
-		self.lexical_Dropout = nn.Dropout(p=config['lexical_dropout_rate'])
-
-		self.lstm_input_size = self.context_embeddings_size
-		self.lstm_output_size = 2*self.config["contextualization_size"]
-		self.mlpx = projection(emb_size=self.context_embeddings_size, 
-								output_size=self.lstm_output_size)
-		#char emb
-		self.char_emb_cnn = cnn(emb_size=self.char_emb_size, kernel_sizes=self.char_filter_widths, num_filter=self.char_filter_size)
-		
-		
-		self.rnn = BiLSTM_1(input_size=self.lstm_input_size,
-							hidden_size=self.config["contextualization_size"],
-							num_layers=config['contextualization_layers'],
-							dropout=self.lstm_dropout)
-		
-		self.start_project = projection(emb_size=self.lstm_output_size,
-										output_size=self.config["ffnn_size"])
-		self.end_project = projection(emb_size=self.lstm_output_size,
-										output_size=self.config['ffnn_size'])
-
-		self.bilinear = bilinear_classifier(dropout=self.dropout, 
-											input_size_x=self.config["ffnn_size"], 
-											input_size_y=self.config["ffnn_size"],
-											output_size=self.num_types+1,
-											)
-		self.criterion = torch.nn.CrossEntropyLoss(reduction='none')
-		self.global_step = 0
-		self.batch_len = None
-
-		self.to(self.device)
-	
-	def sequence_mask(self, lengths, maxlen, dtype=torch.bool):
-		if maxlen is None:
-			maxlen = lengths.max()
-		row = torch.range(0, maxlen-1).to(self.device )
-		matrix = torch.tensor(lengths).view(-1,1)
-		mask = matrix > row
-		mask.type(dtype)
-		return mask
-
-	def forward(self, batch, is_train=False):
-		"""compute score for each step"""
-		batch_tensors = batch[0]
-		tokens, context_word_emb, char_index, text_len, gold_labels = batch_tensors
-
-		n_sentences, max_sentence_length = tokens.shape[0], tokens.shape[1]
-		text_len_mask = self.sequence_mask(lengths=text_len, maxlen=max_sentence_length)
-
-		context_emb_list = []
-		context_emb_list.append(context_word_emb)
-
-		#TODO add char_emb
-		# pdb.set_trace()
-		char_emb = self.char_embbedings(torch.as_tensor(char_index, device=self.device, dtype=torch.int64))
-		_, _, max_char_len, self.char_emb_size = char_emb.shape
-		flattened_char_emb = char_emb.reshape([n_sentences * max_sentence_length, max_char_len, self.char_emb_size]).transpose_(1,2)	# n_words, max_word_len, char_emb_size (N, L, C)->(N, C, L)
-		flattened_aggregated_char_emb = self.char_emb_cnn(flattened_char_emb)
-		aggregated_char_emb = flattened_aggregated_char_emb.reshape(n_sentences, max_sentence_length, flattened_aggregated_char_emb.shape[1])
-		context_emb_list.append(aggregated_char_emb)
-		# pdb.set_trace()
-		context_emb = torch.cat(context_emb_list, 2)
-		context_emb = self.lexical_Dropout(context_emb)
-
-		candidate_scores_mask = torch.logical_and(torch.unsqueeze(text_len_mask,dim=1),torch.unsqueeze(text_len_mask,dim=2)) 
-		candidate_scores_mask = torch.triu(candidate_scores_mask, diagonal=0)
-		flattened_candidate_scores_mask = candidate_scores_mask.view(-1)
-
-		# pdb.set_trace()
-		#----------through rnn------------
-		pack = pack_padded_sequence(context_emb, text_len, batch_first=True, enforce_sorted=False)
-		pack, _ = self.rnn(pack)
-		context_outputs, _ = pad_packed_sequence(pack, batch_first=True, total_length=context_emb.shape[1])
-
-		# context_outputs = self.mlpx(context_emb)
-		#--------biaffine----------------
-		candidate_starts_emb = self.start_project(context_outputs)
-		candidate_end_emb = self.end_project(context_outputs)
-
-		
-		candidate_ner_scores = self.bilinear(candidate_starts_emb, candidate_end_emb)
-		candidate_ner_scores = candidate_ner_scores.reshape(-1,self.num_types+1)[flattened_candidate_scores_mask==True]
-		# pdb.set_trace()
-		if is_train:
-			loss = self.criterion(input=candidate_ner_scores, target=gold_labels)
-			loss = loss.sum()
-		else:
-			loss = 0
-	
-		return loss, candidate_ner_scores
-
-
-
-
-	
-
-
-
-	def get_pred_ner(self, sentences, span_scores, is_flat_ner):  # span_scores: shape [num_sentence, max_sentence_length,max_sentence_length,types+1]
-		candidates = []
-		span_scores = span_scores.detach().cpu().numpy()
-		for sid,sent in enumerate(sentences):
-			for s in range(len(sent)):
-				for e in range(s,len(sent)):
-					candidates.append((sid,s,e))
-		
-		top_spans = [[] for _ in range(len(sentences))]
-		for i, type in enumerate(np.argmax(span_scores,axis=1)):  # span_scores (429,8), type: ner label index, i: sentence id.
-			if type > 0:
-				sid, s,e = candidates[i]
-				top_spans[sid].append((s,e,type,span_scores[i,type]))
-
-		top_spans = [sorted(top_span,reverse=True,key=lambda x:x[3]) for top_span in top_spans] # 对于每个句子中的所有spans，按分数排序
-		sent_pred_mentions = [[] for _ in range(len(sentences))]
-		for sid, top_span in enumerate(top_spans):
-			for ns,ne,t,_ in top_span:
-				for ts,te,_ in sent_pred_mentions[sid]:   # ts, te 是之前记录的span start/end position，ns, ne必须与所有的 ts,te相容。
-					if ns < ts <= ne < te or ts < ns <= te < ne:      # clash 发生，break, ns, ne不相容，看下一span.
-						#for both nested and flat ner no clash is allowed
-						break
-					if is_flat_ner and (ns <= ts <= te <= ne or ts <= ns <= ne <= te):
-						#for flat ner nested mentions are not allowed
-						break
-				else:
-					sent_pred_mentions[sid].append((ns,ne,t))
-		# pdb.set_trace()
-		pred_mentions = set((sid,s,e,t) for sid, spr in enumerate(sent_pred_mentions) for s,e,t in spr)
-		return pred_mentions
-
-
-
-	#------------------------------------------------------------
-	# for training
-	# def load_datasets(self, datatype='train'):
-	# 	if datatype=='train':
-	# 		self.train_dataloader = train_dataloader(config)
-	# 		self.batch_len = len(self.train_dataloader)
-	# 	elif datatype=='eval':
-	# 		self.eval_dataloader = eval_dataloader(config)
-	# 	else:
-	# 		pdb.set_trace()
-		
-	# def step(self):
-	# 	if self.batch_len is not None:
-	# 		batch = self.train_dataloader[self.global_step%self.batch_len]
-	# 		loss_step = self.forward(batch)
-	# 	else:
-	# 		pdb.set_trace()
-	# 	self.global_step += 1
-
-
-
-
-	def evaluate(self, eval_dataloader, is_final_test=False):
-		# self.load_eval_data()
-		self.eval()
-
-		tp,fn,fp = 0,0,0
-		start_time = time.time()
-		num_words = 0
-		sub_tp,sub_fn,sub_fp = [0] * self.num_types,[0]*self.num_types, [0]*self.num_types
-
-		is_flat_ner = 'flat_ner' in self.config and self.config['flat_ner']
-
-		for batch_num, batch in enumerate(eval_dataloader.batches):
-			
-			batch_tensor, batch_data = batch
-			# tokens, context_word_emb, char_index, text_len, gold_labels = batch_tensor
-
-			# pdb.set_trace()
-			_, candidate_ner_scores = self.forward(batch, is_train=False) # (439, 8)
-
-			num_words += sum(len(tok) for tok in batch_data['sentences'])
-
-
-			gold_ners = set([(sid,s,e, self.ner_maps[t]) for sid, ner in enumerate(batch_data['ners']) for s,e,t in ner])  # {(1, 3, 3, 4), (0, 0, 0, 4), (1, 10, 14, 6), (0, 3, 3, 3), (1, 20, 25, 3), (0, 5, 5, 3), (1, 20, 20, 3), (1, 22, 22, 3)}
-			pred_ners = self.get_pred_ner(batch_data["sentences"], candidate_ner_scores,is_flat_ner)
-
-			tp += len(gold_ners & pred_ners)
-			fn += len(gold_ners - pred_ners)
-			fp += len(pred_ners - gold_ners)
-
-			if is_final_test:
-				for i in range(self.num_types):
-					sub_gm = set((sid,s,e) for sid,s,e,t in gold_ners if t ==i+1)
-					sub_pm = set((sid,s,e) for sid,s,e,t in pred_ners if t == i+1)
-					sub_tp[i] += len(sub_gm & sub_pm)
-					sub_fn[i] += len(sub_gm - sub_pm)
-					sub_fp[i] += len(sub_pm - sub_gm)
-
-			if batch_num % 10 == 0:
-				print("Evaluated {}/{} examples.".format(batch_num + 1, len(eval_dataloader.batches)))
-
-		used_time = time.time() - start_time
-		print("Time used: %d second, %.2f w/s " % (used_time, num_words*1.0/used_time))
-
-		m_r = 0 if tp == 0 else float(tp)/(tp+fn)
-		m_p = 0 if tp == 0 else float(tp)/(tp+fp)
-		m_f1 = 0 if m_p == 0 else 2.0*m_r*m_p/(m_r+m_p)
-
-		print("Mention F1: {:.2f}%".format(m_f1*100))
-		print("Mention recall: {:.2f}%".format(m_r*100))
-		print("Mention precision: {:.2f}%".format(m_p*100))
-
-		if is_final_test:
-			print("****************SUB NER TYPES********************")
-			for i in range(self.num_types):
-				sub_r = 0 if sub_tp[i] == 0 else float(sub_tp[i]) / (sub_tp[i] + sub_fn[i])
-				sub_p = 0 if sub_tp[i] == 0 else float(sub_tp[i]) / (sub_tp[i] + sub_fp[i])
-				sub_f1 = 0 if sub_p == 0 else 2.0 * sub_r * sub_p / (sub_r + sub_p)
-
-				print("{} F1: {:.2f}%".format(self.ner_types[i],sub_f1 * 100))
-				print("{} recall: {:.2f}%".format(self.ner_types[i],sub_r * 100))
-				print("{} precision: {:.2f}%".format(self.ner_types[i],sub_p * 100))
-
-		summary_dict = {}
-		summary_dict["Mention F1"] = m_f1
-		summary_dict["Mention recall"] = m_r
-		summary_dict["Mention precision"] = m_p
-
-		return utils.make_summary(summary_dict), m_f1
-
-
-
-
-		
-
-
 
 
 
 #-----------modules------------------
 
-
-
-
-
-
-
-
-
-
-#-----------bilinear-----------------
+def get_shape(t):
+	return list(t.shape)
 
 class Sparse_dropout(nn.Module):
 	def __init__(self, p):
@@ -290,8 +17,7 @@ class Sparse_dropout(nn.Module):
 		self.dropout_rate = p
 	
 	def forward(self, input, noise_shape):
-		if not self.training:
-			return input
+		dropout_rate = self.dropout_rate if self.training else 0
 		shapes = input.shape
 		noise_shape = list(noise_shape)
 		broadcast_dims = []
@@ -303,24 +29,20 @@ class Sparse_dropout(nn.Module):
 		mask_dims = []
 		for dim in broadcast_dims:
 			mask_dims.append(dim[1])
-		mask = torch.bernoulli((torch.ones(mask_dims, device=input.device)*(1-self.dropout_rate)).reshape(noise_shape))*(1/(1-self.dropout_rate))
+		mask = torch.bernoulli((torch.ones(mask_dims, device=input.device)*(1-dropout_rate)).reshape(noise_shape))*(1/(1-dropout_rate))
 		mask.to(input.dtype)
 		return input*mask
-
-
-
 
 class bilinear_classifier(nn.Module):
 
 	def __init__(self, dropout, input_size_x, input_size_y, output_size, bias_x=True, bias_y=True):
 		super(bilinear_classifier, self).__init__()
-		
+		# self.dropout = dropout
 		# self.batch_size = batch_size
 		# self.bucket_size = bucket_size
 		# self.input_size = input_size
 		# pdb.set_trace()
-		# self.dropout_rate = 0
-		self.dropout_rate = dropout
+		self.dropout_rate = 0
 		self.output_size = output_size
 		
 		self.dropout = Sparse_dropout(p=self.dropout_rate)
@@ -377,7 +99,7 @@ class biaffine_mapping(nn.Module):
 		# # b,n,v2 -> b*n, v2
 		# y = y.reshape(-1, y_set_size)
 		biaffine_map = self.biaffine_map.reshape(x_set_size, -1)  # v1, r, v2 -> v1, r*v2
-		# b, n, r*v2 -> b, n*r, v2
+		# b*n, r*v2 -> b, n*r, v2
 		biaffine_mapping = (torch.matmul(x, biaffine_map)).reshape(batch_size, -1, y_set_size)
 		# (b, n*r, v2) bmm (b, n, v2) -> (b, n*r, n) -> (b, n, r, n)
 		biaffine_mapping = (biaffine_mapping.bmm(torch.transpose(y, 1, 2))).reshape(batch_size, bucket_size, self.output_size, bucket_size)
@@ -385,10 +107,6 @@ class biaffine_mapping(nn.Module):
 		biaffine_mapping = biaffine_mapping.transpose(2, 3)
 
 		return biaffine_mapping
-
-
-#------------ linear --------------------------------------
-
 
 def projection(emb_size, output_size, initializer=None):
   return ffnn(emb_size, 0, -1, output_size, dropout=0, output_weights_initializer=initializer)
@@ -439,9 +157,6 @@ class ffnn(nn.Module):
 			outputs = outputs.reshape(batch_size, seqlen, self.output_size)
 		
 		return outputs
-
-
-#--------------lstm ---------------------
 
 class BiLSTM_1(nn.Module):
 
@@ -557,7 +272,6 @@ class BiLSTM_1(nn.Module):
 			c_n.append(torch.stack((c_f, c_b)))
 			text_outputs = torch.cat((x_f, x_b), -1)
 			text_outputs = self.dropout(text_outputs)
-
 			if i > 0:
 				# pdb.set_trace()
 				highway_gates = torch.sigmoid(self.mlp(text_outputs))
@@ -573,11 +287,6 @@ class BiLSTM_1(nn.Module):
 		hx = self.permute_hidden(hx, sequence.unsorted_indices)
 
 		return x, hx
-
-
-	
-
-
 
 class LstmCell(nn.Module):
 	def __init__(self, input_size, hidden_size, dropout=0):
@@ -604,10 +313,9 @@ class LstmCell(nn.Module):
 		batch_size = get_shape(inputs)[0]
 		_dropout_mask = self.dropout(torch.ones(batch_size, self.hidden_size, device=inputs.device))
 		h, c = states
-
-		
 		if self.training:
 			h *= _dropout_mask
+		# pdb.set_trace()
 		concat = self.mlp(inputs=torch.cat([inputs, h], axis=1))	
 		i, j, o = torch.chunk(input=concat, chunks=3, dim=1)
 		i = torch.sigmoid(i)
@@ -658,10 +366,6 @@ class LstmCell(nn.Module):
 			return weights
 		return _initializer
 
-
-
-#---------character embedding-----------------------
-
 class cnn(nn.Module):
 	def __init__(self, emb_size, kernel_sizes, num_filter):
 		super(cnn, self).__init__()
@@ -685,7 +389,6 @@ class cnn(nn.Module):
 			outputs.append(pooled)
 		return torch.cat(outputs, 1)
 	
-
 class cnn_layer(nn.Module):
 	def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True):
 		super(cnn_layer, self).__init__()

@@ -6,6 +6,7 @@ from .data import MultiCorpus, Corpus, Dictionary
 from .list_data import ListCorpus
 from . import embeddings as Embeddings
 from .training_utils import EvaluationMetric
+from .visual.training_curves import Plotter
 import torch
 from torch.utils.data.dataset import ConcatDataset
 from flair.datasets import CoupleDataset
@@ -21,9 +22,10 @@ from . import logging
 import pdb
 import copy
 log = logging.getLogger("flair")
+import pdb
 
 from flair.corpus_mapping import corpus_map,reverse_corpus_map
-dependency_tasks={'enhancedud', 'dependency', 'srl', 'ner_dp'}
+
 class ConfigParser:
 	def __init__(self, config, all=False, zero_shot=False, other_shot=False, predict=False):
 		self.full_corpus={'ner':'CONLL_03_GERMAN:CONLL_03:CONLL_03_DUTCH:CONLL_03_SPANISH', 'upos':'UD_GERMAN:UD_ENGLISH:UD_FRENCH:UD_ITALIAN:UD_DUTCH:UD_SPANISH:UD_PORTUGUESE:UD_CHINESE'}
@@ -33,14 +35,14 @@ class ConfigParser:
 			self.zeroshot_corpus[key]=':'.join(corpus_map[key].values())
 		self.zeroshot_corpus['ner']='PANX-SV:PANX-FR:PANX-RU:PANX-PL:PANX-VI:PANX-JA:PANX-ZH:PANX-AR:PANX-PT:PANX-UK:PANX-FA:PANX-CA:PANX-SR:PANX-NO:PANX-ID:PANX-KO:PANX-FI:PANX-HU:PANX-SH:PANX-CS:PANX-RO:PANX-EU:PANX-TR:PANX-MS:PANX-EO:PANX-HY:PANX-DA:PANX-CE:PANX-HE:PANX-SK:PANX-KK:PANX-HR:PANX-ET:PANX-LT:PANX-BE:PANX-EL:PANX-SL:PANX-GL'
 		# pdb.set_trace()
-		self.zeroshot_corpus={
-		'ner':'PANX-TA:PANX-EU:PANX-HE:PANX-FA', 
-		# 'ner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:MIXED_NER-EU:MIXED_NER-FA:MIXED_NER-FI:MIXED_NER-FR:MIXED_NER-HE:MIXED_NER-HI:MIXED_NER-HR:MIXED_NER-ID:MIXED_NER-NO:MIXED_NER-PL:MIXED_NER-PT:MIXED_NER-SL:MIXED_NER-SV:MIXED_NER-TA',
+		# self.zeroshot_corpus={
+		# # 'ner':'PANX-SV:PANX-FR:PANX-RU:PANX-PL:PANX-VI:PANX-JA:PANX-ZH:PANX-AR:PANX-PT:PANX-UK:PANX-FA:PANX-CA:PANX-SR:PANX-NO:PANX-ID:PANX-KO:PANX-FI:PANX-HU:PANX-SH:PANX-CS:PANX-RO:PANX-EU:PANX-TR:PANX-MS:PANX-EO:PANX-HY:PANX-DA:PANX-CE:PANX-HE:PANX-SK:PANX-KK:PANX-HR:PANX-ET:PANX-LT:PANX-BE:PANX-EL:PANX-SL:PANX-GL', 
+		# # 'ner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:MIXED_NER-EU:MIXED_NER-FA:MIXED_NER-FI:MIXED_NER-FR:MIXED_NER-HE:MIXED_NER-HI:MIXED_NER-HR:MIXED_NER-ID:MIXED_NER-NO:MIXED_NER-PL:MIXED_NER-PT:MIXED_NER-SL:MIXED_NER-SV:MIXED_NER-TA',
 		# 'ner':'MIXED_NER-EN:MIXED_NER-NL:MIXED_NER-ES:MIXED_NER-DE:MIXED_NER-EU:MIXED_NER-FA:MIXED_NER-FI:MIXED_NER-FR:MIXED_NER-HE:MIXED_NER-HI:MIXED_NER-HR:MIXED_NER-ID:MIXED_NER-JA:MIXED_NER-NO:MIXED_NER-PL:MIXED_NER-PT:MIXED_NER-SL:MIXED_NER-SV:MIXED_NER-TA',
-		'upos':'UD_TURKISH:UD_SWEDISH:UD_SPANISH:UD_SLOVAK:UD_SERBIAN:UD_RUSSIAN:UD_ROMANIAN:UD_PORTUGUESE:UD_POLISH:UD_NORWEGIAN:UD_KOREAN:UD_ITALIAN:UD_HINDI:UD_GERMAN:UD_FINNISH:UD_DUTCH:UD_DANISH:UD_CZECH:UD_CROATIAN:UD_CHINESE:UD_CATALAN:UD_BULGARIAN:UD_BASQUE:UD_ARABIC:UD_HEBREW:UD_JAPANESE:UD_INDONESIAN:UD_PERSIAN:UD_TAMIL',
-		'mixedner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:MIXED_NER-EU:MIXED_NER-FA:MIXED_NER-FI:MIXED_NER-FR:MIXED_NER-HE:MIXED_NER-HI:MIXED_NER-HR:MIXED_NER-ID:MIXED_NER-NO:MIXED_NER-PL:MIXED_NER-PT:MIXED_NER-SL:MIXED_NER-SV:MIXED_NER-TA',
-		'low10ner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:LOW10_NER-EU:LOW10_NER-FA:LOW10_NER-FI:LOW10_NER-FR:LOW10_NER-HE:LOW10_NER-HI:LOW10_NER-HR:LOW10_NER-ID:LOW10_NER-NO:LOW10_NER-PL:LOW10_NER-PT:LOW10_NER-SL:LOW10_NER-SV:LOW10_NER-TA',
-		}
+		# 'upos':'UD_TURKISH:UD_SWEDISH:UD_SPANISH:UD_SLOVAK:UD_SERBIAN:UD_RUSSIAN:UD_ROMANIAN:UD_PORTUGUESE:UD_POLISH:UD_NORWEGIAN:UD_KOREAN:UD_ITALIAN:UD_HINDI:UD_GERMAN:UD_FINNISH:UD_DUTCH:UD_DANISH:UD_CZECH:UD_CROATIAN:UD_CHINESE:UD_CATALAN:UD_BULGARIAN:UD_BASQUE:UD_ARABIC:UD_HEBREW:UD_JAPANESE:UD_INDONESIAN:UD_PERSIAN:UD_TAMIL',
+		# 'mixedner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:MIXED_NER-EU:MIXED_NER-FA:MIXED_NER-FI:MIXED_NER-FR:MIXED_NER-HE:MIXED_NER-HI:MIXED_NER-HR:MIXED_NER-ID:MIXED_NER-NO:MIXED_NER-PL:MIXED_NER-PT:MIXED_NER-SL:MIXED_NER-SV:MIXED_NER-TA',
+		# 'low10ner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN:LOW10_NER-EU:LOW10_NER-FA:LOW10_NER-FI:LOW10_NER-FR:LOW10_NER-HE:LOW10_NER-HI:LOW10_NER-HR:LOW10_NER-ID:LOW10_NER-NO:LOW10_NER-PL:LOW10_NER-PT:LOW10_NER-SL:LOW10_NER-SV:LOW10_NER-TA',
+		# }
 							# 'upos':'UD_TURKISH:UD_SWEDISH:UD_SPANISH:UD_SLOVAK:UD_SERBIAN:UD_RUSSIAN:UD_ROMANIAN:UD_PORTUGUESE:UD_POLISH:UD_NORWEGIAN:UD_KOREAN:UD_ITALIAN:UD_HINDI:UD_GERMAN:UD_FINNISH:UD_DUTCH:UD_DANISH:UD_CZECH:UD_CROATIAN:UD_CHINESE:UD_CATALAN:UD_BULGARIAN:UD_BASQUE:UD_ARABIC'}
 
 		self.othershot_corpus={'ner':'CONLL_03_DUTCH:CONLL_03_SPANISH:CONLL_03:CONLL_03_GERMAN'}
@@ -60,19 +62,12 @@ class ConfigParser:
 			self.corpus: ListCorpus=self.get_predict_corpus
 		else:
 			self.corpus: ListCorpus=self.get_corpus
-		if 'trainer' in self.config and self.config['trainer'] == 'SWAFTrainer':
-			self.assign_system_prediction
 		self.tokens = self.corpus.get_train_full_tokenset(-1, min_freq =-1 if 'min_freq' not in self.config['train'] else self.config['train']['min_freq'])
-		for embedding in config['embeddings'].keys():
-			if 'LemmaEmbeddings' in embedding:
-				self.lemmas = self.corpus.get_train_full_tokenset(-1, min_freq =-1 if 'min_lemma_freq' not in self.config['train'] else self.config['train']['min_lemma_freq'], attr='lemma')[0]
-			if 'POSEmbeddings' in embedding:
-				self.postags = self.corpus.get_train_full_tokenset(-1, min_freq =-1 if 'min_pos_freq' not in self.config['train'] else self.config['train']['min_pos_freq'], attr='pos')[0]
 		use_unlabeled_data = False if 'use_unlabeled_data' not in self.config['train'] else self.config['train']['use_unlabeled_data']
 		if use_unlabeled_data:
-
+			
 			self.unlabeled_corpus: ListCorpus=self.get_unlabeled_corpus
-
+			
 			unlabeled_data_for_zeroshot = False if 'unlabeled_data_for_zeroshot' not in self.config['train'] else self.config['train']['unlabeled_data_for_zeroshot']
 			self.assign_unlabel_tag(self.corpus,1)
 			self.assign_unlabel_tag(self.unlabeled_corpus,-1)
@@ -141,20 +136,11 @@ class ConfigParser:
 		# how to solve the problem of loading model?
 		word_map = None
 		char_map = None
-		lemma_map = None
-		postag_map = None
 		for embedding in embeddings:
-			# pdb.set_trace()
 			if isinstance(embeddings[embedding],dict):
 				if 'FastWordEmbeddings' in embedding:
 					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(**embeddings[embedding],all_tokens=self.tokens))
 					word_map = embedding_list[-1].vocab
-				elif 'LemmaEmbeddings' in embedding:
-					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(**embeddings[embedding],vocab=self.lemmas))
-					lemma_map = embedding_list[-1].lemma_dictionary
-				elif 'POSEmbeddings' in embedding:
-					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(**embeddings[embedding],vocab=self.postags))
-					postag_map = embedding_list[-1].pos_dictionary
 				elif 'FastCharacterEmbeddings' in embedding:
 					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(vocab=self.tokens[1],**embeddings[embedding]))
 					char_map = embedding_list[-1].char_dictionary
@@ -165,17 +151,11 @@ class ConfigParser:
 				if 'FastCharacterEmbeddings' in embedding:
 					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(vocab=self.tokens[1]))
 					char_map = embedding_list[-1].char_dictionary
-				elif 'LemmaEmbeddings' in embedding:
-					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(vocab=self.lemmas))
-					lemma_map = embedding_list[-1].lemma_dictionary
-				elif 'POSEmbeddings' in embedding:
-					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])(vocab=self.postags))
-					postag_map = embedding_list[-1].pos_dictionary
 				else:
 					embedding_list.append(getattr(Embeddings,embedding.split('-')[0])())
 
 		embeddings: Embeddings.StackedEmbeddings = Embeddings.StackedEmbeddings(embeddings=embedding_list)
-		return embeddings, word_map, char_map, lemma_map, postag_map
+		return embeddings, word_map, char_map
 	def create_model(self, config: dict = None, pretrained=False, is_student=False, crf=True):
 		if config is None:
 			config=self.config
@@ -184,12 +164,10 @@ class ConfigParser:
 			if self.config['is_toy']==True:
 				pretrained=False
 				pass
-		embeddings, word_map, char_map, lemma_map, postag_map=self.create_embeddings(config['embeddings'])
+		embeddings, word_map, char_map=self.create_embeddings(config['embeddings'])
 		kwargs=copy.deepcopy(config['model'])
 		classname=list(kwargs.keys())[0]
 		kwargs=copy.deepcopy(config['model'][classname])
-		if classname == 'EnsembleModel':
-			kwargs['candidates'] = len(config[self.target]['systems'])
 		if crf==False:
 			kwargs['use_crf']=crf
 		# pdb.set_trace()
@@ -201,15 +179,13 @@ class ConfigParser:
 		tagger = getattr(models,classname)(**kwargs, config=config)
 		tagger.word_map = word_map
 		tagger.char_map = char_map
-		tagger.lemma_map = lemma_map
-		tagger.postag_map = postag_map
 
 		#
 		if pretrained:
 			if is_student and 'pretrained_model' in config:
 				base_path=Path(config['target_dir'])/config['pretrained_model']
 			base_path=Path(config['target_dir'])/config['model_name']
-
+			# pdb.set_trace()
 			if (base_path / "best-model.pt").exists():
 				log.info('Loading pretraining best model')
 				tagger = tagger.load(base_path / "best-model.pt")
@@ -259,7 +235,6 @@ class ConfigParser:
 			if len(set(self.corpus.targets)&corpus_target)==0:
 				continue
 			config=Params.from_file(filename)
-
 			teacher_model=self.create_model(config, pretrained=True)
 			teacher_model.to("cpu")
 			teacher_model.targets=corpus_target
@@ -299,35 +274,21 @@ class ConfigParser:
 			elif 'UD' in corpus:
 				kwargs=self.config['model']
 				classname=list(kwargs.keys())[0]
-
 				if self.target=='enhancedud':
-					kwargs = {}
-					if 'eud_path' in self.config[self.target]:
-						kwargs['eud_path'] = self.config[self.target]['eud_path']
-					# if 'UNREL' in corpus:
-					# 	current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0], **kwargs)
-					# else:
-					current_dataset=getattr(datasets,'ENHANCEDUD')(corpus, **kwargs)
+					if 'UNREL' in corpus:
+						current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
+					else:
+						current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 				elif self.target=='dependency' and 'use_crf' in kwargs[classname] and kwargs[classname]['use_crf']:
 					current_dataset=getattr(datasets,'UD_PROJ')(corpus,add_root = self.target=='dependency')
 				else:
 					current_dataset=getattr(datasets,'UD')(corpus,add_root = self.target=='dependency')
-			elif 'DM' in corpus or 'PSD' in corpus or 'PAS' in corpus:
-				current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 			elif 'SRL' in corpus:
 				corpus,lc=corpus.split('-')
 				current_dataset=getattr(datasets,corpus)(lang=lc.lower())
 			elif 'PANX' in corpus or 'SEMEVAL16' in corpus or 'CALCS' in corpus or 'MIXED_NER' in corpus or 'LOW10_NER' in corpus or 'COMMNER' in corpus or 'ATIS' in corpus:
 				corpus,lc=corpus.split('-')
 				current_dataset=getattr(datasets,corpus)(tag_to_bioes=self.target, lang=lc.lower())
-			elif 'TWEEBANK' in corpus:
-				current_dataset=getattr(datasets,corpus)()
-			elif 'ColumnCorpus' in corpus or 'UniversalDependenciesCorpus' in corpus:
-				if '-' in corpus:
-					corpus_name,idx=corpus.split('-')
-				else:
-					corpus_name = corpus
-				current_dataset=getattr(datasets,corpus_name)(**self.config[self.target][corpus])
 			else:
 				current_dataset=getattr(datasets,corpus)(tag_to_bioes=self.target)
 			corpus_list['train'].append(current_dataset.train)
@@ -337,24 +298,6 @@ class ConfigParser:
 		corpus: ListCorpus = ListCorpus(**corpus_list)
 		return corpus
 	@property
-	def get_trc_corpus(self):
-		corpus_list={'train':[],'dev':[],'test':[], 'targets':[]}
-		for corpus in self.config['TRC']:
-			if 'ColumnCorpus' in corpus:
-				if '-' in corpus:
-					corpus_name,idx=corpus.split('-')
-				else:
-					corpus_name = corpus
-				current_dataset=getattr(datasets,corpus_name)(**self.config['TRC'][corpus])
-			else:
-				current_dataset=getattr(datasets,corpus)(**self.config['TRC'][corpus])
-			corpus_list['train'].append(current_dataset.train)
-			corpus_list['dev'].append(current_dataset.dev)
-			corpus_list['test'].append(current_dataset.test)
-			corpus_list['targets'].append(corpus)
-		trc_corpus: ListCorpus = ListCorpus(**corpus_list)
-		return trc_corpus
-	@property
 	def get_full_corpus(self):
 		corpus_list={'train':[],'dev':[],'test':[]}
 		for corpus in self.full_corpus[self.target].split(':'):
@@ -363,10 +306,10 @@ class ConfigParser:
 				current_dataset=getattr(datasets,corpus)()
 			elif 'UD' in corpus:
 				if self.target=='enhancedud':
-					# if 'UNREL' in corpus:
-					# 	current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
-					# else:
-					current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
+					if 'UNREL' in corpus:
+						current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
+					else:
+						current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 				if self.target=='dependency':
 					current_dataset=getattr(datasets,'UD_PROJ')(corpus,add_root = self.target=='dependency')
 				else:
@@ -374,7 +317,6 @@ class ConfigParser:
 			elif 'PANX' in corpus or 'SEMEVAL16' in corpus or 'CALCS' in corpus or 'MIXED_NER' in corpus or 'LOW10_NER' in corpus or 'COMMNER' in corpus or 'ATIS' in corpus:
 				corpus,lc=corpus.split('-')
 				current_dataset=getattr(datasets,corpus)(tag_to_bioes=self.target, lang=lc.lower())
-			
 			else:
 				current_dataset=getattr(datasets,corpus)(tag_to_bioes=self.target)
 			corpus_list['train'].append(current_dataset.train)
@@ -392,10 +334,10 @@ class ConfigParser:
 				current_dataset=getattr(datasets,corpus)()
 			elif 'UD' in corpus:
 				if self.target=='enhancedud':
-					# if 'UNREL' in corpus:
-					# 	current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
-					# else:
-					current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
+					if 'UNREL' in corpus:
+						current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
+					else:
+						current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 				if self.target=='dependency':
 					current_dataset=getattr(datasets,'UD_PROJ')(corpus,add_root = self.target=='dependency')
 				else:
@@ -420,10 +362,10 @@ class ConfigParser:
 				current_dataset=getattr(datasets,corpus)()
 			elif 'UD' in corpus:
 				if self.target=='enhancedud':
-					# if 'UNREL' in corpus:
-					# 	current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
-					# else:
-					current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
+					if 'UNREL' in corpus:
+						current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
+					else:
+						current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 				if self.target=='dependency':
 					current_dataset=getattr(datasets,'UD_PROJ')(corpus,add_root = self.target=='dependency')
 				else:
@@ -449,10 +391,10 @@ class ConfigParser:
 			current_dataset=getattr(datasets,corpus)()
 		elif 'UD' in corpus:
 			if self.target=='enhancedud':
-				# if 'UNREL' in corpus:
-				# 	current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
-				# else:
-				current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
+				if 'UNREL' in corpus:
+					current_dataset=getattr(datasets,'UNREL_ENHANCEDUD')(corpus.split('-')[0])
+				else:
+					current_dataset=getattr(datasets,'ENHANCEDUD')(corpus)
 			if self.target=='dependency':
 				current_dataset=getattr(datasets,'UD_PROJ')(corpus,add_root = self.target=='dependency')
 			else:
@@ -498,67 +440,11 @@ class ConfigParser:
 				corpus_list['dev'].append(current_dataset.dev)
 				corpus_list['test'].append(current_dataset.test)
 				corpus_list['targets'].append('unlabeled'+'-'+config['model_name']+'-'+lang)
+				
 				self.config[self.target]['teachers'][filename]+=':'+'unlabeled'+'-'+config['model_name']+'-'+lang
-				# pdb.set_trace()
+				
 		corpus: ListCorpus = ListCorpus(**corpus_list)
 		return corpus
-	@property
-	def assign_system_prediction(self):
-		# pdb.set_trace()
-		teacher_list=[]
-		configs=self.config[self.target]['systems']
-		log.info(f'System Candidates: {sorted(configs.keys())}')
-		for filename in sorted(configs.keys()):
-			dev_file = Path('system_pred/dev.'+filename+'.conllu')
-			test_file = Path('system_pred/test.'+filename+'.conllu')
-			if self.target in dependency_tasks:
-				dev = datasets.UniversalDependenciesDataset(dev_file, in_memory=True, add_root=True, spliter='\t')
-				test = datasets.UniversalDependenciesDataset(test_file, in_memory=True, add_root=True, spliter='\t')
-			else:
-				dev = datasets.ColumnDataset(
-					dev_file,
-					column_name_map = {0: "text", 1: "gold_label", 2:"pred_label", 3:"score"},
-					tag_to_bioes=None,
-					comment_symbol=None,
-					in_memory=True,
-				)
-				test = datasets.ColumnDataset(
-					test_file,
-					column_name_map = {0: "text", 1: "gold_label", 2:"pred_label", 3:"score"},
-					tag_to_bioes=None,
-					comment_symbol=None,
-					in_memory=True,
-				)
-			# pdb.set_trace()
-			for idx, corpus_name in enumerate(self.corpus.targets):
-				if self.config[self.target]['systems'][filename] != corpus_name:
-					continue
-				if len(self.corpus.dev_list[idx]) != len(dev):
-					pdb.set_trace()
-				for sentid, sentence in enumerate(self.corpus.dev_list[idx]):
-
-					for tokenid, token in enumerate(sentence):
-						if len(sentence) != len(dev[sentid]):
-							pdb.set_trace()
-						if not hasattr(token, 'system_preds'):
-							token.system_preds=[]
-							token.system_scores=[]
-						token.system_preds.append(dev[sentid][tokenid].tags['pred_label']._value)
-						token.system_scores.append(float(dev[sentid][tokenid].tags['score']._value))
-						
-				if len(self.corpus.test_list[idx]) != len(test):
-					pdb.set_trace()
-				for sentid, sentence in enumerate(self.corpus.test_list[idx]):
-
-					for tokenid, token in enumerate(sentence):
-						if len(sentence) != len(test[sentid]):
-							pdb.set_trace()
-						if not hasattr(token, 'system_preds'):
-							token.system_preds=[]
-							token.system_scores=[]
-						token.system_preds.append(test[sentid][tokenid].tags['pred_label']._value)
-						token.system_scores.append(float(test[sentid][tokenid].tags['score']._value))
-		# pdb.set_trace()
 	@property
 	def check_model_corpus_group(self):
 		cfg=self.config['model_name']

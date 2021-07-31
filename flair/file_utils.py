@@ -19,6 +19,8 @@ import io
 # from allennlp.common.tqdm import Tqdm
 import flair
 
+import pdb
+
 logger = logging.getLogger("flair")
 
 
@@ -149,6 +151,7 @@ def get_from_cache(url: str, cache_dir: Path = None) -> Path:
     Given a URL, look for the corresponding dataset in the local cache.
     If it's not there, download it. Then return the path to the cached file.
     """
+    # pdb.set_trace()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     filename = re.sub(r".+/", "", url)

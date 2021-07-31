@@ -260,5 +260,3 @@ class MFVI(nn.Module):
 			q_value = q_value*mask.unsqueeze(-1)
 			
 		return q_value
-
-

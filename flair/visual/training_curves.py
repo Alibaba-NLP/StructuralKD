@@ -7,6 +7,7 @@ import numpy as np
 import csv
 
 import matplotlib
+import matplotlib.pyplot as plt
 import math
 
 # to enable %matplotlib inline if running in ipynb
@@ -24,7 +25,7 @@ except:
     pass
 
 
-import matplotlib.pyplot as plt
+
 
 
 # header for 'weights.txt'

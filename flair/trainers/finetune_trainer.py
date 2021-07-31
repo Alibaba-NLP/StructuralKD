@@ -15,13 +15,9 @@ from torch.optim.lr_scheduler import ExponentialLR, LambdaLR
 import random
 import copy
 from flair.parser.utils.alg import crf
-import h5py
-import numpy as np
-START_TAG: str = "<START>"
-STOP_TAG: str = "<STOP>"
 
 
-dependency_tasks={'enhancedud', 'dependency', 'srl', 'ner_dp'}
+
 def get_inverse_square_root_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, fix_embedding_steps, steepness = 0.5, factor = 5, model_size=1, last_epoch=-1):
 	""" Create a schedule with a learning rate that decreases linearly after
 	linearly increasing during a warmup period.
@@ -39,12 +35,6 @@ def get_inverse_square_root_schedule_with_warmup(optimizer, num_warmup_steps, nu
 		return max(0.0, factor * (model_size ** (-0.5) * min(step ** (-steepness), step * num_warmup_steps ** (-steepness - 1))))
 
 	return LambdaLR(optimizer, lr_lambda, last_epoch)
-
-
-def compute_F1(tp, fp, fn):
-	precision = tp/(tp+fp + 1e-12)
-	recall = tp/(tp+fn + 1e-12)
-	return 2 * (precision * recall) / (precision + recall+ 1e-12)
 
 class ModelFinetuner(ModelDistiller):
 	def __init__(
@@ -67,12 +57,6 @@ class ModelFinetuner(ModelDistiller):
 		direct_upsample_rate: int = -1,
 		down_sample_amount: int = -1,
 		sentence_level_batch: bool = False,
-		clip_sentences: int = -1,
-		remove_sentences: bool = False,
-		assign_doc_id: bool = False,
-		train_with_doc: bool = False,
-		pretrained_file_dict: dict = {},
-		sentence_level_pretrained_data: bool = False,
 	):
 		"""
 		Initialize a model trainer
@@ -88,7 +72,6 @@ class ModelFinetuner(ModelDistiller):
 		# if teachers is not None:
 		#   assert len(teachers)==len(corpus.train_list), 'Training data and teachers should be the same length now!'
 		self.model: flair.nn.Model = model
-		self.config = config
 		self.corpus: ListCorpus = corpus
 		num_languages = len(self.corpus.targets)
 		self.corpus2id = {x:i for i,x in enumerate(self.corpus.targets)}
@@ -99,61 +82,8 @@ class ModelFinetuner(ModelDistiller):
 			sent_each_dataset=sent_per_set/total_sents
 			exp_sent_each_dataset=sent_each_dataset.pow(0.7)
 			sent_sample_prob=exp_sent_each_dataset/exp_sent_each_dataset.sum()
-
-
-		self.sentence_level_pretrained_data=sentence_level_pretrained_data
 		
-		if assign_doc_id:
-			doc_sentence_dict = {}
-			same_corpus_mapping = {'CONLL_06_GERMAN': 'CONLL_03_GERMAN_NEW',
-			'CONLL_03_GERMAN_DP': 'CONLL_03_GERMAN_NEW',
-			'CONLL_03_DP': 'CONLL_03_ENGLISH',
-			'CONLL_03_DUTCH_DP': 'CONLL_03_DUTCH_NEW',
-			'CONLL_03_SPANISH_DP': 'CONLL_03_SPANISH_NEW'}
-			for corpus_id in range(len(self.corpus2id)):
-				
-				if self.corpus.targets[corpus_id] in same_corpus_mapping:
-					corpus_name = same_corpus_mapping[self.corpus.targets[corpus_id]].lower()+'_'
-				else:
-					corpus_name = self.corpus.targets[corpus_id].lower()+'_'
-				doc_sentence_dict = self.assign_documents(self.corpus.train_list[corpus_id], 'train_', doc_sentence_dict, corpus_name, train_with_doc)
-				doc_sentence_dict = self.assign_documents(self.corpus.dev_list[corpus_id], 'dev_', doc_sentence_dict, corpus_name, train_with_doc)
-				doc_sentence_dict = self.assign_documents(self.corpus.test_list[corpus_id], 'test_', doc_sentence_dict, corpus_name, train_with_doc)
-				if train_with_doc:
-					new_sentences=[]
-					for sentid, sentence in enumerate(self.corpus.train_list[corpus_id]):
-						if sentence[0].text=='-DOCSTART-':
-							continue
-						new_sentences.append(sentence)
-					self.corpus.train_list[corpus_id].sentences = new_sentences.copy()
-					self.corpus.train_list[corpus_id].reset_sentence_count
-
-					new_sentences=[]
-					for sentid, sentence in enumerate(self.corpus.dev_list[corpus_id]):
-						if sentence[0].text=='-DOCSTART-':
-							continue
-						new_sentences.append(sentence)
-					self.corpus.dev_list[corpus_id].sentences = new_sentences.copy()
-					self.corpus.dev_list[corpus_id].reset_sentence_count
-
-					new_sentences=[]
-					for sentid, sentence in enumerate(self.corpus.test_list[corpus_id]):
-						if sentence[0].text=='-DOCSTART-':
-							continue
-						new_sentences.append(sentence)
-					self.corpus.test_list[corpus_id].sentences = new_sentences.copy()
-					self.corpus.test_list[corpus_id].reset_sentence_count
-
-			if train_with_doc:
-				self.corpus._train: FlairDataset = ConcatDataset([data for data in self.corpus.train_list])
-				self.corpus._dev: FlairDataset = ConcatDataset([data for data in self.corpus.dev_list])		
-				self.corpus._test: FlairDataset = ConcatDataset([data for data in self.corpus.test_list])		
-			# for key in pretrained_file_dict:
-			# pdb.set_trace()
-			for embedding in self.model.embeddings.embeddings:
-				if embedding.name in pretrained_file_dict:
-					self.assign_predicted_embeddings(doc_sentence_dict,embedding,pretrained_file_dict[embedding.name])
-		for corpus_name in self.corpus2id:
+		for corpus_name in self.corpus2id:	# {'CONLL_03_DP_TEST': 0}
 			i = self.corpus2id[corpus_name]
 			for sentence in self.corpus.train_list[i]:
 				sentence.lang_id=i
@@ -168,21 +98,8 @@ class ModelFinetuner(ModelDistiller):
 				# idx = random.sample(range(length), int(sent_sample_prob[i] * total_sents))
 				idx = torch.randint(length, (int(sent_sample_prob[i] * total_sents),))
 				self.corpus.train_list[i].sentences = [self.corpus.train_list[i][x] for x in idx]
-			if down_sample_amount>0:
-				if 'UNLABEL' in corpus_name:
-					pass
-				elif len(self.corpus.train_list[i].sentences)>down_sample_amount:
-					if 'use_unlabeled_data' in config['train'] and config['train']['use_unlabeled_data']:
-						if 'unlabel' not in corpus_name.lower():
-							continue
-					self.corpus.train_list[i].sentences = self.corpus.train_list[i].sentences[:down_sample_amount]
-					self.corpus.train_list[i].reset_sentence_count
-					if config['train']['train_with_dev']:
-						self.corpus.dev_list[i].sentences = self.corpus.dev_list[i].sentences[:down_sample_amount]
-						self.corpus.dev_list[i].reset_sentence_count
 			if direct_upsample_rate>0:
-				# if len(self.corpus.train_list[i].sentences)<(sent_per_set.max()/direct_upsample_rate).item():
-				if len(self.corpus.train_list[i].sentences)<(sent_per_set.max()).item():
+				if len(self.corpus.train_list[i].sentences)<(sent_per_set.max()/direct_upsample_rate).item():
 					res_sent=[]
 					dev_res_sent=[]
 					for sent_batch in range(direct_upsample_rate):
@@ -194,25 +111,13 @@ class ModelFinetuner(ModelDistiller):
 					if config['train']['train_with_dev']:
 						self.corpus.dev_list[i].sentences = dev_res_sent
 						self.corpus.dev_list[i].reset_sentence_count
-			if clip_sentences>-1:
-				new_sentences=[]
-				removed_count=0
-				max_len = 0
-				for sentence in self.corpus.train_list[i].sentences:
-					subtoken_length = self.get_subtoken_length(sentence)
-					if subtoken_length>max_len:
-						max_len = subtoken_length
-					if subtoken_length > clip_sentences:
-						removed_count+=1
-					else:
-						new_sentences.append(sentence)
-				self.corpus.train_list[i].sentences = new_sentences
-				self.corpus.train_list[i].reset_sentence_count
-				log.info(f"Longest subwords in the training set {max_len}")
-				log.info(f"Removed {removed_count} sentences whose subwords are longer than {clip_sentences}")
-
-
-
+			if down_sample_amount>0:
+				if len(self.corpus.train_list[i].sentences)>down_sample_amount:
+					self.corpus.train_list[i].sentences = self.corpus.train_list[i].sentences[:down_sample_amount]
+					self.corpus.train_list[i].reset_sentence_count
+					if config['train']['train_with_dev']:
+						self.corpus.dev_list[i].sentences = self.corpus.dev_list[i].sentences[:down_sample_amount]
+						self.corpus.dev_list[i].reset_sentence_count
 		if direct_upsample_rate>0 or down_sample_amount:
 			self.corpus._train: FlairDataset = ConcatDataset([data for data in self.corpus.train_list])
 			if config['train']['train_with_dev']:
@@ -236,7 +141,8 @@ class ModelFinetuner(ModelDistiller):
 		# self.corpus = self.assign_pretrained_teacher_predictions(self.corpus,self.corpus_teacher,self.teachers)
 		self.update_params_group=[]
 		
-		if self.model.biaf_attention and not is_test:
+
+		if self.model.biaf_attention and not is_test:	# ner_dp: false
 			# self.model.init_biaf(self.teachers[0].hidden_size, num_teachers=len(self.teachers)+int(len(self.professors)>0))
 			teacher_hidden = self.teachers[0].hidden_size
 			if self.model.token_level_attention:
@@ -298,7 +204,7 @@ class ModelFinetuner(ModelDistiller):
 		self.optimizer_state: dict = optimizer_state
 		self.use_tensorboard: bool = use_tensorboard
 		
-		
+		self.config = config
 		self.use_bert = False
 		self.bert_tokenizer = None
 		for embedding in self.model.embeddings.embeddings:
@@ -309,66 +215,6 @@ class ModelFinetuner(ModelDistiller):
 		self.train_with_professor: bool = train_with_professor
 		# if self.train_with_professor:
 		#   assert len(self.professors) == len(self.corpus.train_list), 'Now only support same number of professors and corpus!'
-		# pdb.set_trace()
-		self.use_unlabeled_data = False
-		if hasattr(self.model, 'multi_view_training') and self.model.multi_view_training:
-			use_unlabeled_data = False
-			# if len(self.corpus.train_list) > 2:
-			# 	pdb.set_trace()
-			# pdb.set_trace()
-			target_corpus_list = []
-			for corpus_name in self.corpus2id:
-				if 'doc' in corpus_name.lower():
-					target_corpus_name = corpus_name
-					target_corpus_list.append(target_corpus_name)
-				elif 'unlabelgraph' in corpus_name.lower():
-					pass
-				elif 'unlabel' in corpus_name.lower():
-					use_unlabeled_data = True
-					unlabel_corpus_name = corpus_name
-				else:
-					source_corpus_name = corpus_name
-			for target_corpus_name in target_corpus_list:
-				log.info(f"{source_corpus_name} -> {target_corpus_name}")
-
-				target_corpus_id = self.corpus2id[target_corpus_name]
-				source_corpus_id = self.corpus2id[source_corpus_name]
-				# pdb.set_trace()
-				for sent_id, sentence in enumerate(self.corpus.train_list[target_corpus_id]):
-					sentence.orig_sent=self.corpus.train_list[source_corpus_id][sent_id]
-				for sent_id, sentence in enumerate(self.corpus.dev_list[target_corpus_id]):
-					sentence.orig_sent=self.corpus.dev_list[source_corpus_id][sent_id]
-				for sent_id, sentence in enumerate(self.corpus.test_list[target_corpus_id]):
-					sentence.orig_sent=self.corpus.test_list[source_corpus_id][sent_id]
-			if use_unlabeled_data:
-				unlabeled_corpus_id = self.corpus2id[unlabel_corpus_name]
-				for sent_id, sentence in enumerate(self.corpus.train_list[unlabeled_corpus_id]):
-					# pdb.set_trace()
-					
-					current_sentence = copy.deepcopy(sentence)
-					words = [x.text for x in current_sentence.tokens]
-					if '<EOS>' in words:
-						eos_id = words.index('<EOS>')
-						current_sentence.chunk_sentence(0,eos_id)
-					else:
-						pass
-					sentence.is_unlabel = True
-					sentence.orig_sent=current_sentence
-				target_corpus_id_list = [self.corpus2id[target_corpus_name] for target_corpus_name in target_corpus_list]
-				self.corpus._train: FlairDataset = ConcatDataset([self.corpus.train_list[source_corpus_id]]+[self.corpus.train_list[target_corpus_id] for target_corpus_id in target_corpus_id_list] )
-				self.corpus._dev: FlairDataset = ConcatDataset([self.corpus.dev_list[source_corpus_id]]+[self.corpus.dev_list[target_corpus_id] for target_corpus_id in target_corpus_id_list])
-				self.corpus._test: FlairDataset = ConcatDataset([self.corpus.test_list[source_corpus_id]]+[self.corpus.test_list[target_corpus_id] for target_corpus_id in target_corpus_id_list])
-				self.use_unlabeled_data = True
-				self.unlabeled_corpus = self.corpus.train_list[unlabeled_corpus_id]
-		if pretrained_file_dict != {} and 'model' in pretrained_file_dict:
-			base_path = Path(pretrained_file_dict['model'])
-			if (base_path / "best-model.pt").exists():
-				self.model = self.model.load(base_path / "best-model.pt")
-				log.info(f"Using pretrained best model at {base_path}")
-			elif (base_path / "final-model.pt").exists():
-				self.model = self.model.load(base_path / "final-model.pt")
-				log.info(f"Using pretrained final model at {base_path}")
-
 	def train(
 		self,
 		base_path: Union[Path, str],
@@ -393,7 +239,6 @@ class ModelFinetuner(ModelDistiller):
 		num_workers: int = 4,
 		sampler=None,
 		use_amp: bool = False,
-		use_autocast: bool = False,
 		language_attention_warmup_and_fix: bool = False,
 		language_attention_warmup: bool = False,
 		language_attention_entropy: bool = False,
@@ -406,8 +251,7 @@ class ModelFinetuner(ModelDistiller):
 		max_epochs_without_improvement = 100,
 		gold_reward = False,
 		warmup_steps: int = 0,
-		warmup_epochs: int = 1,
-		use_warmup: bool = False,
+		use_warmup: bool = True,
 		gradient_accumulation_steps: int = 1,
 		lr_rate: int = 1,
 		decay: float = 0.75,
@@ -417,15 +261,11 @@ class ModelFinetuner(ModelDistiller):
 		fine_tune_mode: bool = False,
 		debug: bool = False,
 		min_freq: int = -1,
-		min_lemma_freq: int = -1,
-		min_pos_freq: int = -1,
 		unlabeled_data_for_zeroshot: bool = False,
 		rootschedule: bool = False,
 		freezing: bool = False,
-		save_finetuned_embedding: bool = False,
-		multi_view_rate: float = 0.5,
 		**kwargs,
-	) -> dict:
+		) -> dict:
 
 		"""
 		Trains any class that implements the flair.nn.Model interface.
@@ -454,20 +294,13 @@ class ModelFinetuner(ModelDistiller):
 		:param kwargs: Other arguments for the Optimizer
 		:return:
 		"""
+
+		
 		self.n_gpu = torch.cuda.device_count()
 		min_learning_rate = learning_rate/1000
 		self.gold_reward = gold_reward
 		self.embeddings_storage_mode=embeddings_storage_mode
-		self.distill_storage_mode=self.embeddings_storage_mode
-		if self.distill_mode and fine_tune_mode:
-			self.distill_storage_mode = 'cpu'
-
 		self.mini_batch_size=mini_batch_size
-		if use_autocast:
-			from torch.cuda.amp import autocast
-			from torch.cuda.amp import GradScaler
-			scaler = GradScaler()
-
 		if self.use_tensorboard:
 			try:
 				from torch.utils.tensorboard import SummaryWriter
@@ -538,13 +371,14 @@ class ModelFinetuner(ModelDistiller):
 
 		# prepare loss logging file and set up header
 		loss_txt = init_output_file(base_path, "loss.tsv")
-		# weight_extractor = WeightExtractor(base_path)
+
+		weight_extractor = WeightExtractor(base_path)
 		# finetune_params = {name:param for name,param in self.model.named_parameters()}
 		finetune_params=[param for name,param in self.model.named_parameters() if 'embedding' in name or name=='linear.weight' or name=='linear.bias']
 		other_params=[param for name,param in self.model.named_parameters() if 'embedding' not in name and name !='linear.weight' and name !='linear.bias']
-		# all_params = [param for name,param in self.model.named_parameters()]
-		# pdb.set_trace()
 		# other_params = {name:param for name,param in self.model.named_parameters() if 'embeddings' not in name}
+		# pdb.set_trace()
+		
 		if len(self.update_params_group)>0:
 			optimizer: torch.optim.Optimizer = self.optimizer(
 				[{"params":other_params,"lr":learning_rate*lr_rate},
@@ -573,19 +407,19 @@ class ModelFinetuner(ModelDistiller):
 		# minimize training loss if training with dev data, else maximize dev score
 		
 		# start from here, the train data is a list now
-		if self.use_unlabeled_data:
-			train_data = [self.corpus.train]
-			if train_with_dev:
-				train_data = [ConcatDataset([self.corpus.train, self.corpus.dev])]
-		else:
-			train_data = self.corpus.train_list
+		train_data = self.corpus.train_list
+		# if self.distill_mode:
+		#   train_data_teacher = self.corpus_teacher.train_list
+		# train_data = self.corpus_mixed
+		# if training also uses dev data, include in training set
+		if train_with_dev:
+			train_data = [ConcatDataset([train, self.corpus.dev_list[index]]) for index, train in enumerate(self.corpus.train_list)]
 			# if self.distill_mode:
-			#   train_data_teacher = self.corpus_teacher.train_list
-			# train_data = self.corpus_mixed
-			# if training also uses dev data, include in training set
-			if train_with_dev:
-				train_data = [ConcatDataset([train, self.corpus.dev_list[index]]) for index, train in enumerate(self.corpus.train_list)]
-		if self.distill_mode:
+			#   train_data_teacher = [ConcatDataset([train, self.corpus_teacher.dev_list[index]]) for index, train in enumerate(self.corpus_teacher.train_list)]
+			# train_data = [ConcatDataset([train, self.corpus_mixed.dev_list[index]]) for index, train in self.corpus_mixed.train_list]
+			# train_data_teacher = ConcatDataset([self.corpus_teacher.train, self.corpus_teacher.dev])
+			# train_data = ConcatDataset([self.corpus_mixed.train, self.corpus_mixed.dev])
+		if self.distill_mode:	
 			
 			# coupled_train_data = [CoupleDataset(data,train_data_teacher[index]) for index, data in enumerate(train_data)]
 			coupled_train_data = train_data
@@ -604,8 +438,9 @@ class ModelFinetuner(ModelDistiller):
 				for professor in self.professors:
 					del professor
 				del self.professors
-			if self.model.distill_crf or self.model.distill_posterior or self.model.distill_exact:
+			if self.model.distill_crf or self.model.distill_posterior:
 				train_data=self.assign_pretrained_teacher_targets(coupled_train_data,self.teachers,best_k=best_k)
+
 			else:
 				train_data=self.assign_pretrained_teacher_predictions(coupled_train_data,self.teachers,faster=faster)
 				if train_language_attention_by_dev:
@@ -625,36 +460,35 @@ class ModelFinetuner(ModelDistiller):
 			for teacher in self.teachers:
 				del teacher
 			del self.teachers
-			batch_loader=ColumnDataLoader(train_data,mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
-		else:
-			batch_loader=ColumnDataLoader(ConcatDataset(train_data),mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
+			batch_loader=ColumnDataLoader(train_data,mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
+		else:	# ner dp 
+			batch_loader=ColumnDataLoader(ConcatDataset(train_data),mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 		batch_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 		if self.distill_mode:
-			batch_loader=self.resort(batch_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior or self.model.distill_exact, is_token_att = self.model.token_level_attention)
-		if not train_with_dev:
-			if macro_avg:
-				dev_loaders=[ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch) \
+			pdb.set_trace()
+			batch_loader=self.resort(batch_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior, is_token_att = self.model.token_level_attention)
+		if not train_with_dev:	# ner dp
+			if macro_avg:	
+				# pdb.set_trace()
+				dev_loaders=[ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch) \
 							 for subcorpus in self.corpus.dev_list]
 				for loader in dev_loaders:
 					loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-
 			else:
-				dev_loader=ColumnDataLoader(list(self.corpus.dev),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				dev_loader=ColumnDataLoader(list(self.corpus.dev),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 				dev_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-		test_loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
+		test_loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 		test_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-		if self.use_unlabeled_data:
-			unlabeled_loader = ColumnDataLoader(self.unlabeled_corpus,mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
-
 		# if self.distill_mode:
 		#   batch_loader.expand_teacher_predictions()
 		# if sampler is not None:
 		#   sampler = sampler(train_data)
 		#   shuffle = False
 
-		if not fine_tune_mode:
-			
-			if self.model.tag_type in dependency_tasks:
+		# DEFINE schedule
+		if not fine_tune_mode:	#fresh train here	# ner dp
+			#---------------for ner_dp------------------------------
+			if self.model.tag_type in {'enhancedud', 'dependency', 'srl', 'ner_dp'}:	# ner dp
 				scheduler = ExponentialLR(optimizer, decay**(1/decay_steps))
 			else:
 				anneal_mode = "min" if train_with_dev else "max"
@@ -667,13 +501,13 @@ class ModelFinetuner(ModelDistiller):
 				)
 		else:
 			### Finetune Scheduler
-			t_total = (len(batch_loader) // gradient_accumulation_steps + int((len(batch_loader) % gradient_accumulation_steps)>0)) * max_epochs
+			t_total = len(batch_loader) // gradient_accumulation_steps * max_epochs
 			if rootschedule:
-				warmup_steps = (len(batch_loader) // gradient_accumulation_steps + int((len(batch_loader) % gradient_accumulation_steps)>0)) * warmup_epochs
+				warmup_steps = len(batch_loader)
 				scheduler = get_inverse_square_root_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total, fix_embedding_steps = warmup_steps)
 			else:
 				if use_warmup:
-					warmup_steps = (len(batch_loader) // gradient_accumulation_steps + int((len(batch_loader) % gradient_accumulation_steps)>0)) * warmup_epochs
+					warmup_steps = len(batch_loader)
 				scheduler = get_linear_schedule_with_warmup(
 					optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total
 				)
@@ -687,8 +521,8 @@ class ModelFinetuner(ModelDistiller):
 		dev_score_history = []
 		dev_loss_history = []
 		train_loss_history = []
-		# if self.n_gpu > 1:
-		# 	self.model = torch.nn.DataParallel(self.model)
+		if self.n_gpu > 1:
+			self.model = torch.nn.DataParallel(self.model)
 		# At any point you can hit Ctrl + C to break out of training early.
 		best_score=0
 		interpolation=1
@@ -701,18 +535,18 @@ class ModelFinetuner(ModelDistiller):
 			language_attention_warmup = False
 			calc_teachers_target_loss = True
 			warmup_bias = 0
-		else:
+		else:		# ner dp
 			language_attention_warmup = False
 			calc_teachers_target_loss = False
 			warmup_bias = 0
 		if train_language_attention_by_dev:  
-			dev_att_loader=ColumnDataLoader(dev_data,mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
-			dev_att_loader=self.resort(dev_att_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior or self.model.distill_exact, is_token_att = self.model.token_level_attention)
+			dev_att_loader=ColumnDataLoader(dev_data,mini_batch_size,shuffle,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
+			dev_att_loader=self.resort(dev_att_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior, is_token_att = self.model.token_level_attention)
 			self.train_language_attention(dev_att_loader,optimizer,language_attention_entropy=language_attention_entropy,entropy_loss_rate=entropy_loss_rate,max_epochs=30)
 
 			calc_teachers_target_loss=False
 			language_attention_warmup=False
-			if self.model.biaf_attention:
+			if self.model.biaf_attention:		
 				self.biaffine.U.requires_grad=False
 				self.biaffine.U.grad=None
 			else:
@@ -726,9 +560,9 @@ class ModelFinetuner(ModelDistiller):
 			for index,subcorpus in enumerate(dev_data_teacher):
 				# log_line(log)
 				# log.info('current corpus: '+self.corpus.targets[index])
-				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-				loader=self.resort(loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior or self.model.distill_exact, is_token_att = self.model.token_level_attention)
+				loader=self.resort(loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior, is_token_att = self.model.token_level_attention)
 				if self.model.use_language_attention and self.model.biaf_attention and self.model.use_language_vector:
 					language_weight=self.biaffine(self.language_vector,self.teacher_vector)
 				else:
@@ -741,33 +575,12 @@ class ModelFinetuner(ModelDistiller):
 				# log.info(current_result.detailed_results)
 			mavg=sum(result_dict.values())/len(result_dict)
 			log.info('Macro Average: '+f'{mavg:.2f}'+'\tMacro avg loss: ' + f'{((sum(loss_list)/len(loss_list)).item()):.2f}' +  print_sent)
-
-		
-		if fine_tune_mode:
-			pass
-		else:
-			self.model.embeddings=self.model.embeddings.to('cpu')
-			if log_test:
-				loaders = [batch_loader,test_loader]
-			else:
-				loaders = [batch_loader]
-			if not train_with_dev:
-				if macro_avg:
-					self.gpu_friendly_assign_embedding(loaders+dev_loaders)
-				else:
-					self.gpu_friendly_assign_embedding(loaders+[dev_loader])
-			else:
-				self.gpu_friendly_assign_embedding(loaders)
-			
-		try:
+		try:	# ner dp
 			previous_learning_rate = learning_rate
 			training_order = None
 			bad_epochs2=0
-			total_iter = 0
-			
 			for epoch in range(0 + self.epoch, max_epochs + self.epoch):
 				log_line(log)
-
 				# get new learning rate
 				if self.model.use_crf:
 					learning_rate = optimizer.param_groups[0]["lr"]
@@ -785,11 +598,11 @@ class ModelFinetuner(ModelDistiller):
 					learning_rate != previous_learning_rate
 					and anneal_with_restarts
 					and (base_path / "best-model.pt").exists()
-				):
+					):
 					log.info("resetting to best model")
 					self.model.load(base_path / "best-model.pt")
 
-				previous_learning_rate = learning_rate
+				previous_learning_rate = learning_rate		# ner dp
 
 				# stop training if learning rate becomes too small
 				if learning_rate < min_learning_rate and warmup_steps <= 0:
@@ -797,7 +610,8 @@ class ModelFinetuner(ModelDistiller):
 					log.info("learning rate too small - quitting training!")
 					log_line(log)
 					break
-				if self.model.tag_type in dependency_tasks:
+				#--------------add ner_dp--------------------------
+				if self.model.tag_type in {'enhancedud', 'dependency', 'srl', 'ner_dp'}: 
 					if bad_epochs2>=max_epochs_without_improvement:
 						log_line(log)
 						log.info(str(bad_epochs2) + " epochs after improvement - quitting training!")
@@ -805,13 +619,13 @@ class ModelFinetuner(ModelDistiller):
 						break
 				if shuffle:
 					batch_loader.reshuffle()
-					
 				if true_reshuffle:
+					
 					batch_loader.true_reshuffle()
+					
 					batch_loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
 					if self.distill_mode:
-						batch_loader=self.resort(batch_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior or self.model.distill_exact, is_token_att = self.model.token_level_attention)
-
+						batch_loader=self.resort(batch_loader,is_crf=self.model.distill_crf, is_posterior = self.model.distill_posterior, is_token_att = self.model.token_level_attention)
 				self.model.train()
 				# TODO: check teacher parameters fixed and with eval() mode
 
@@ -828,14 +642,9 @@ class ModelFinetuner(ModelDistiller):
 				total_sent=0
 				if self.distill_mode:
 					if self.teacher_annealing:
-						# interpolation=1
-						interpolation=1-(((epoch-warmup_bias)*total_number_of_batches)/total_number_of_batches*self.anneal_factor)/100.0
-						if interpolation<0:
-							interpolation=0
+						interpolation=1
 					else:
 						interpolation=self.interpolation
-
-
 				log.info("Current loss interpolation: "+ str(interpolation))
 				if epoch>0 and language_attention_warmup_and_fix:
 					calc_teachers_target_loss=False
@@ -850,25 +659,14 @@ class ModelFinetuner(ModelDistiller):
 				elif epoch>0 and language_attention_warmup:
 					calc_teachers_target_loss=True
 					language_attention_warmup=False
-				name_list=sorted([x.name for x in self.model.embeddings.embeddings])
-				print(name_list)
-
-				if use_autocast:
-					caster = autocast()
-				else:
-					caster = torch.enable_grad()
-				
-				
-				train_loss = 0
-				seen_batches = 0
+				# pdb.set_trace()
 				for batch_no, student_input in enumerate(batch_loader):
 					# for group in optimizer.param_groups:
-					#   temp_lr = group["lr"]
+					# 	temp_lr = group["lr"]
 					# log.info('lr: '+str(temp_lr))
 					# print(self.language_weight.softmax(1))
 					# print(self.biaffine.U)
 					if self.distill_mode:
-
 						if self.teacher_annealing:
 							interpolation=1-(((epoch-warmup_bias)*total_number_of_batches+batch_no)/total_number_of_batches*self.anneal_factor)/100.0
 							if interpolation<0:
@@ -878,190 +676,116 @@ class ModelFinetuner(ModelDistiller):
 						# log.info("Current loss interpolation: "+ str(interpolation))
 					start_time = time.time()
 					total_sent+=len(student_input)
-					multi_view_training = False
-					is_unlabeled_batch = False
+
 					try:
-						with caster:
-							if self.distill_mode:
-								
-								if self.model.use_language_attention and self.model.biaf_attention and self.model.use_language_vector:
-									language_weight=self.biaffine(self.language_vector,self.teacher_vector)
-								else:
-									language_weight=self.language_weight
-								loss = self.model.simple_forward_distillation_loss(student_input, interpolation = interpolation, train_with_professor=self.train_with_professor, professor_interpolation = professor_interpolation, calc_teachers_target_loss=calc_teachers_target_loss, language_attention_warmup=language_attention_warmup,
-											language_weight = language_weight, biaffine = self.biaffine, language_vector = self.language_vector,)
-							else:
-								# if self.n_gpu>1:
-								# 	features = self.model(student_input)
-								# 	loss=self.model.calculate_loss(features,student_input,self.model.mask)
-								if hasattr(self.model,'multi_view_training') and self.model.multi_view_training:
-									loss, features = self.model.forward_loss(student_input, return_features=True)
-									tag_list = self.model.check_multi_view(student_input)
-									if type(tag_list) is torch.Tensor:
-										loss=loss*(1-multi_view_rate)
-										multi_view_training = True
-									if loss == 0:
-										# pdb.set_trace()
-										is_unlabeled_batch = True
-									# for sentence in student_input:
-									# 	if hasattr(sentence,'orig_sent') and sentence.orig_sent is not None:
-									# 		loss=loss*0.5
-									# 		# log.info(f"{loss}")
-									# 		multi_view_training = True
-									# 		break
-								else:
-									# log.info('Debugging !!!!')
-									# pass
-									loss = self.model.forward_loss(student_input)
-
-							if language_attention_entropy and calc_teachers_target_loss:
-								# add entropy loss so that the distribution is more smooth
-								loss+=entropy_loss_rate*(language_weight.softmax(1)*language_weight.log_softmax(1)).sum()/language_weight.shape[0]
-
-							if self.model.use_decoder_timer:
-								decode_time=time.time() - self.model.time
+						if self.distill_mode:
 							
-							# if self.n_gpu>1:
-							# 	loss = loss.mean()  # mean() to average on multi-gpu parallel training
-							# Backward
-							average_factor = 1
-							if batch_no >= total_number_of_batches//gradient_accumulation_steps * gradient_accumulation_steps:
-								# only accumulate the rest of batch
-								average_factor = (total_number_of_batches-total_number_of_batches//gradient_accumulation_steps * gradient_accumulation_steps)
-								loss = loss/average_factor
+							if self.model.use_language_attention and self.model.biaf_attention and self.model.use_language_vector:
+								language_weight=self.biaffine(self.language_vector,self.teacher_vector)
 							else:
-								average_factor = gradient_accumulation_steps
-								loss = loss/average_factor
-							if multi_view_training and loss!=0:
-								train_loss += loss.item()
-						# pdb.set_trace()
+								language_weight=self.language_weight
+							loss = self.model.simple_forward_distillation_loss(student_input, interpolation = interpolation, train_with_professor=self.train_with_professor, professor_interpolation = professor_interpolation, calc_teachers_target_loss=calc_teachers_target_loss, language_attention_warmup=language_attention_warmup,
+										language_weight = language_weight, biaffine = self.biaffine, language_vector = self.language_vector,)
+						else:
+							if self.n_gpu>1:
+								features = self.model(student_input)
+								loss=self.model.calculate_loss(features,student_input,self.model.mask)
+							else:	# ner dp
+								loss = self.model.forward_loss(student_input)
+
+						if language_attention_entropy and calc_teachers_target_loss:
+							
+							# add entropy loss so that the distribution is more smooth
+							loss+=entropy_loss_rate*(language_weight.softmax(1)*language_weight.log_softmax(1)).sum()/language_weight.shape[0]
+						if self.model.use_decoder_timer:
+							decode_time=time.time() - self.model.time
+						optimizer.zero_grad()	#ner dp
+						if self.n_gpu>1:
+							loss = loss.mean()  # mean() to average on multi-gpu parallel training
+						# Backward
 						if use_amp:
 							with amp.scale_loss(loss, optimizer) as scaled_loss:
 								scaled_loss.backward()
-						elif use_autocast:
-							scaler.scale(loss).backward()
 						else:
-							if loss != 0:
-								loss.backward()
+							loss.backward()		# ner dp
+
 							pass
-						if multi_view_training:
-							with caster:
-								loss = self.model.multi_view_loss(student_input, features, tag_list)
-								if is_unlabeled_batch:
-									loss = loss/average_factor
-								else:
-									loss = loss*multi_view_rate/average_factor
-							if use_autocast:
-								scaler.scale(loss).backward()
-							elif use_amp:
-								with amp.scale_loss(loss, optimizer) as scaled_loss:
-									scaled_loss.backward()
-							else:
-								loss.backward()
-						if self.use_unlabeled_data:
-							with caster:
-								# pdb.set_trace()
-								unlabeled_input = unlabeled_loader[random.randint(0,len(unlabeled_loader)-1)]
-								with torch.no_grad():
-									unlabeled_features = self.model.forward(unlabeled_input)
-								unlabeled_tag_list = self.model.check_multi_view(unlabeled_input)
-								pass_loss = True
-								if type(unlabeled_tag_list) is torch.Tensor:
-									loss = self.model.multi_view_loss(unlabeled_input, unlabeled_features, unlabeled_tag_list)
-									loss = loss/average_factor
-								else:
-									pass_loss = False
-							if pass_loss:
-								if use_autocast:
-									scaler.scale(loss).backward()
-								elif use_amp:
-									with amp.scale_loss(loss, optimizer) as scaled_loss:
-										scaled_loss.backward()
-								else:
-									loss.backward()
 					except Exception:
 						traceback.print_exc()
-						log.info(f"{[len(x) for x in student_input]}")
-						log.info(f"{student_input}")
-						if self.use_unlabeled_data:
-							log.info(f"{unlabeled_input}")
 						pdb.set_trace()
-					# pdb.set_trace()
-					# print(self.model.linear.weight.sum())
-					if loss != 0:
-						train_loss += loss.item()
+					torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+					# if epoch in {1,2,3}:
+					# 	for name, parms in self.model.named_parameters():
+					# 		# print('name:', name, 'grad_requirs:',parms.requires_grad, 'grad_value:',parms.grad)
+					# 		if parms.requires_grad:
+					# 			if name=='rel_attn.weight':
+					# 				g = parms.grad
+					# 			print('name:', name, 'grad_shape:',parms.shape, 'grad_value:', parms.grad)
+						
+					# 	pdb.set_trace()
+					if len(self.update_params_group)>0:
+						torch.nn.utils.clip_grad_norm_(self.update_params_group, 5.0)
+					optimizer.step()
+
+
+					if (fine_tune_mode or self.model.tag_type in {'enhancedud', 'dependency', 'srl', 'ner_dp'}):
+						scheduler.step()
+
 					seen_batches += 1
+					train_loss += loss.item()
+
+					# depending on memory mode, embeddings are moved to CPU, GPU or deleted
+					store_embeddings(student_input, embeddings_storage_mode)
+					if self.distill_mode:
+						store_teacher_predictions(student_input, embeddings_storage_mode)
+
 					batch_time += time.time() - start_time
-					if (batch_no+1)%gradient_accumulation_steps==0 or (batch_no == total_number_of_batches - 1):
-						if use_autocast:
-							scaler.unscale_(optimizer)
-						torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-						if len(self.update_params_group)>0:
-							torch.nn.utils.clip_grad_norm_(self.update_params_group, 5.0)
-						# print("update model")
-						if use_autocast:
-							scaler.step(optimizer)
-							scaler.update()
-						else:
-							optimizer.step()
-						self.model.zero_grad()
-
-						# optimizer.zero_grad()
-						if (fine_tune_mode or self.model.tag_type in dependency_tasks):
-							scheduler.step()
-
-					
 					if batch_no % modulo == 0:
 						if self.model.use_decoder_timer:
 							log.info(
 								f"epoch {epoch + 1} - iter {batch_no}/{total_number_of_batches} - loss "
-								f"{train_loss / (seen_batches) * gradient_accumulation_steps:.8f} - samples/sec: {total_sent / batch_time:.2f} - decode_sents/sec: {total_sent / decode_time:.2f}"
+								f"{train_loss / seen_batches:.8f} - samples/sec: {total_sent / batch_time:.2f} - decode_sents/sec: {total_sent / decode_time:.2f}"
 							)
 							
-						else:
+						else:	# ner dp
 							log.info(
 								f"epoch {epoch + 1} - iter {batch_no}/{total_number_of_batches} - loss "
-								f"{train_loss / seen_batches* gradient_accumulation_steps:.8f} - samples/sec: {total_sent / batch_time:.2f}"
+								f"{train_loss / seen_batches:.8f} - samples/sec: {total_sent / batch_time:.2f}"
 							)
 						total_sent=0
 						batch_time = 0
 						iteration = epoch * total_number_of_batches + batch_no
-						# if not param_selection_mode:
-						#   weight_extractor.extract_weights(
-						#       self.model.state_dict(), iteration
-						#   )
-					# depending on memory mode, embeddings are moved to CPU, GPU or deleted
-					store_embeddings(student_input, embeddings_storage_mode)
-
-					if hasattr(self.model, 'multi_view_training') and self.model.multi_view_training:
-						orig_sentences = [sentence.orig_sent for idx, sentence in enumerate(student_input) if hasattr(sentence,'orig_sent') ]
-						if len(orig_sentences)>0:
-							store_embeddings(orig_sentences, embeddings_storage_mode)
-						if embeddings_storage_mode == 'none' and multi_view_training:
-							student_input.orig_sentences.features = {}
-					if self.use_unlabeled_data:
-						store_embeddings(unlabeled_input, embeddings_storage_mode)
-						orig_sentences = [sentence.orig_sent for idx, sentence in enumerate(unlabeled_input) if hasattr(sentence,'orig_sent') ]
-						if len(orig_sentences)>0:
-							store_embeddings(orig_sentences, embeddings_storage_mode)
-					if embeddings_storage_mode == "none" and hasattr(student_input,'features'):
-						student_input.features = {}
-						student_input.sentence_features = {}
-					if self.distill_mode:
-						store_teacher_predictions(student_input, embeddings_storage_mode)
-					total_iter +=1
-				# if self.model.embedding_selector:
-				#   print(sorted(student_input.features.keys()))
-				#   print(self.model.selector)
-				#   print(torch.argmax(self.model.selector,-1))
+						if not param_selection_mode:	# ner dp
+							weight_extractor.extract_weights(
+								self.model.state_dict(), iteration
+							)
+				if self.model.embedding_selector:
+					print(sorted(student_input.features.keys()))
+					print(self.model.selector)
+					print(torch.argmax(self.model.selector,-1))
 				train_loss /= seen_batches
 
+				#------------------------------------------------
+				# begin eval
 				self.model.eval()
 
 				log_line(log)
 				log.info(
 					f"EPOCH {epoch + 1} done: loss {train_loss:.4f} - lr {learning_rate}"
 				)
+
+				#----------------------------------------------
+				# test trainset F1
+				# train_eval_result, train_loss = self.model.evaluate(
+				# 										batch_loader,
+				# 										embeddings_storage_mode=embeddings_storage_mode,
+				# 										)	
+
+				# log.info('Trainset evaluation: {}'.format(train_eval_result.log_line))
+
+
+
+
 
 				if self.use_tensorboard:
 					writer.add_scalar("train_loss", train_loss, epoch + 1)
@@ -1073,6 +797,7 @@ class ModelFinetuner(ModelDistiller):
 				result_line: str = ""
 
 				if log_train:
+					# pdb.set_trace()
 					train_eval_result, train_loss = self.model.evaluate(
 						batch_loader,
 						embeddings_storage_mode=embeddings_storage_mode,
@@ -1081,10 +806,10 @@ class ModelFinetuner(ModelDistiller):
 
 					# depending on memory mode, embeddings are moved to CPU, GPU or deleted
 					store_embeddings(self.corpus.train, embeddings_storage_mode)
-					if embeddings_storage_mode == "none" and hasattr(self.corpus.train,'features'):
-							del self.corpus.train.features
 				log_line(log)
-				if log_dev:
+				
+				if log_dev:	# ner dp
+				
 					if macro_avg:
 						
 						if type(self.corpus) is ListCorpus:
@@ -1092,10 +817,10 @@ class ModelFinetuner(ModelDistiller):
 							loss_list=[]
 							print_sent='\n'
 							for index, loader in enumerate(dev_loaders):
+
 								# log_line(log)
 								# log.info('current corpus: '+self.corpus.targets[index])
-								if len(loader) == 0:
-									continue
+
 								current_result, dev_loss = self.model.evaluate(
 									loader,
 									embeddings_storage_mode=embeddings_storage_mode,
@@ -1114,6 +839,7 @@ class ModelFinetuner(ModelDistiller):
 						
 						current_score = mavg
 					else:
+						pdb.set_trace()
 						dev_eval_result, dev_loss = self.model.evaluate(
 							dev_loader,
 							embeddings_storage_mode=embeddings_storage_mode,
@@ -1130,8 +856,7 @@ class ModelFinetuner(ModelDistiller):
 						current_score = dev_eval_result.main_score
 					# depending on memory mode, embeddings are moved to CPU, GPU or deleted
 					store_embeddings(self.corpus.dev, embeddings_storage_mode)
-					if embeddings_storage_mode == "none" and hasattr(self.corpus.dev,'features'):
-						del self.corpus.dev.features
+
 					if self.use_tensorboard:
 						writer.add_scalar("dev_loss", dev_loss, epoch + 1)
 						writer.add_scalar(
@@ -1151,8 +876,7 @@ class ModelFinetuner(ModelDistiller):
 
 					# depending on memory mode, embeddings are moved to CPU, GPU or deleted
 					store_embeddings(self.corpus.test, embeddings_storage_mode)
-					if embeddings_storage_mode == "none" and hasattr(self.corpus.test,'features'):
-						del self.corpus.test.features
+
 					if self.use_tensorboard:
 						writer.add_scalar("test_loss", test_loss, epoch + 1)
 						writer.add_scalar(
@@ -1165,7 +889,7 @@ class ModelFinetuner(ModelDistiller):
 							log_line(log)
 							log.info('current corpus: '+subcorpus.name)
 							current_result, test_loss = self.model.evaluate(
-								ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch),
+								ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch),
 								out_path=base_path / f"{subcorpus.name}-test.tsv",
 								embeddings_storage_mode=embeddings_storage_mode,
 							)
@@ -1176,7 +900,7 @@ class ModelFinetuner(ModelDistiller):
 							log_line(log)
 							log.info('current corpus: '+self.corpus.targets[index])
 							current_result, test_loss = self.model.evaluate(
-								ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=sort_data, model = self.model, sentence_level_batch = self.sentence_level_batch),
+								ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch),
 								out_path=base_path / f"{self.corpus.targets[index]}-test.tsv",
 								embeddings_storage_mode=embeddings_storage_mode,
 							)
@@ -1185,18 +909,13 @@ class ModelFinetuner(ModelDistiller):
 
 
 				# determine learning rate annealing through scheduler
-				if not fine_tune_mode and self.model.tag_type not in dependency_tasks:
+				if not fine_tune_mode and self.model.tag_type not in { 'enhancedud', 'dependency', 'srl', 'ner_dp'  }:
 					scheduler.step(current_score)
-				
 				if current_score>best_score:
 					best_score=current_score
 					bad_epochs2=0
 				else:
 					bad_epochs2+=1
-				if train_with_dev:
-					# train as the learning rate gradually drops
-					bad_epochs2 = 0
-
 				train_loss_history.append(train_loss)
 
 				# determine bad epoch number
@@ -1206,12 +925,46 @@ class ModelFinetuner(ModelDistiller):
 					bad_epochs = 0
 				for group in optimizer.param_groups:
 					new_learning_rate = group["lr"]
-				if new_learning_rate != previous_learning_rate:
+				if new_learning_rate != previous_learning_rate:	#??
 					bad_epochs = patience + 1
 
 				# log bad epochs
 				log.info(f"BAD EPOCHS (no improvement): {bad_epochs}")
 				log.info(f"GLOBAL BAD EPOCHS (no improvement): {bad_epochs2}")
+
+				# output log file
+				# with open(loss_txt, "a") as f:
+
+				#   # make headers on first epoch
+				#   if epoch == 0:
+				#       f.write(
+				#           f"EPOCH\tTIMESTAMP\tBAD_EPOCHS\tLEARNING_RATE\tTRAIN_LOSS"
+				#       )
+
+				#       if log_train:
+				#           f.write(
+				#               "\tTRAIN_"
+				#               + "\tTRAIN_".join(
+				#                   train_eval_result.log_header.split("\t")
+				#               )
+				#           )
+				#       if log_dev:
+				#           f.write(
+				#               "\tDEV_LOSS\tDEV_"
+				#               + "\tDEV_".join(dev_eval_result.log_header.split("\t"))
+				#           )
+				#       if log_test:
+				#           f.write(
+				#               "\tTEST_LOSS\tTEST_"
+				#               + "\tTEST_".join(
+				#                   test_eval_result.log_header.split("\t")
+				#               )
+				#           )
+
+				#   f.write(
+				#       f"\n{epoch}\t{datetime.datetime.now():%H:%M:%S}\t{bad_epochs}\t{learning_rate:.4f}\t{train_loss}"
+				#   )
+				#   f.write(result_line)
 
 				if self.model.use_language_attention:
 					if self.model.biaf_attention:
@@ -1220,22 +973,22 @@ class ModelFinetuner(ModelDistiller):
 						print(self.language_weight.softmax(1))
 				# if checkpoint is enable, save model at each epoch
 				if checkpoint and not param_selection_mode:
-					# if self.n_gpu>1:
-					# 	self.model.module.save_checkpoint(
-					# 		base_path / "checkpoint.pt",
-					# 		optimizer.state_dict(),
-					# 		scheduler.state_dict(),
-					# 		epoch + 1,
-					# 		train_loss,
-					# 	)
-					# else:
-					self.model.save_checkpoint(
-						base_path / "checkpoint.pt",
-						optimizer.state_dict(),
-						scheduler.state_dict(),
-						epoch + 1,
-						train_loss,
-					)
+					if self.n_gpu>1:
+						self.model.module.save_checkpoint(
+							base_path / "checkpoint.pt",
+							optimizer.state_dict(),
+							scheduler.state_dict(),
+							epoch + 1,
+							train_loss,
+						)
+					else:
+						self.model.save_checkpoint(
+							base_path / "checkpoint.pt",
+							optimizer.state_dict(),
+							scheduler.state_dict(),
+							epoch + 1,
+							train_loss,
+						)
 
 				# if we use dev data, remember best model based on dev evaluation score
 				if (
@@ -1243,35 +996,15 @@ class ModelFinetuner(ModelDistiller):
 					and not param_selection_mode
 					and current_score == best_score
 				):
-					log.info(f"==================Saving the current best model: {current_score}==================") 
-					# if self.n_gpu>1:
-					# 	self.model.module.save(base_path / "best-model.pt")
-					# else:
-					self.model.save(base_path / "best-model.pt")
-					if save_finetuned_embedding:
-						# pdb.set_trace()
-						log.info(f"==================Saving the best language model: {current_score}==================") 
-						for embedding in self.model.embeddings.embeddings:
-							if hasattr(embedding,'fine_tune') and embedding.fine_tune: 
-								if not os.path.exists(base_path/embedding.name.split('/')[-1]):
-									os.mkdir(base_path/embedding.name.split('/')[-1])
-								embedding.tokenizer.save_pretrained(base_path/embedding.name.split('/')[-1])
-								embedding.model.save_pretrained(base_path/embedding.name.split('/')[-1])
-							# torch.save(embedding,base_path/(embedding.name.split('/')[-1]+'.bin'))
+					if self.n_gpu>1:
+						self.model.module.save(base_path / "best-model.pt")
+					else:
+						self.model.save(base_path / "best-model.pt")
 
 			# if we do not use dev data for model selection, save final model
 			if save_final_model and not param_selection_mode:
 				self.model.save(base_path / "final-model.pt")
-				if save_finetuned_embedding and train_with_dev:
-					# pdb.set_trace()
-					log.info(f"==================Saving the best language model: {current_score}==================") 
-					for embedding in self.model.embeddings.embeddings:
-						if hasattr(embedding,'fine_tune') and embedding.fine_tune: 
-							if not os.path.exists(base_path/embedding.name.split('/')[-1]):
-								os.mkdir(base_path/embedding.name.split('/')[-1])
-							embedding.tokenizer.save_pretrained(base_path/embedding.name.split('/')[-1])
-							embedding.model.save_pretrained(base_path/embedding.name.split('/')[-1])
-						# torch.save(embedding,base_path/(embedding.name.split('/')[-1]+'.bin'))
+
 		except KeyboardInterrupt:
 			log_line(log)
 			log.info("Exiting from training early.")
@@ -1291,7 +1024,6 @@ class ModelFinetuner(ModelDistiller):
 			final_score = 0
 			log.info("Test data not provided setting final score to 0")
 
-		# pdb.set_trace()
 		log.removeHandler(log_handler)
 
 		if self.use_tensorboard:
@@ -1307,7 +1039,6 @@ class ModelFinetuner(ModelDistiller):
 			"train_loss_history": train_loss_history,
 			"dev_loss_history": dev_loss_history,
 		}
-	
 	@property
 	def interpolation(self):
 		try:
@@ -1326,6 +1057,7 @@ class ModelFinetuner(ModelDistiller):
 			return self.config['anneal_factor']
 		except:
 			return 2
+	
 	def train_language_attention(self,data_loader,optimizer,language_attention_entropy=False,entropy_loss_rate=0.01,max_epochs=10):
 		
 		for epoch in range(max_epochs):
@@ -1354,7 +1086,7 @@ class ModelFinetuner(ModelDistiller):
 
 				if self.model.distill_prob:
 					# from prob to log
-					input_teacher_features=(teacher_features+1e-100*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
+					input_teacher_features=(teacher_features+1e-12*(1-mask.unsqueeze(-1))).log()*mask.unsqueeze(-1)
 				else:
 					input_teacher_features=teacher_features
 				loss = self.model._calculate_loss(input_teacher_features, data_points, mask)
@@ -1398,8 +1130,8 @@ class ModelFinetuner(ModelDistiller):
 			for index, train_data in enumerate(coupled_train_data):
 				target = self.corpus.targets[index]
 				if target not in teacher.targets:
-					continue
-				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=False,use_bert=use_bert, model = teacher, sentence_level_batch = self.sentence_level_batch)
+					continue    
+				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=False,use_bert=use_bert)
 				loader.word_map = teacher.word_map
 				loader.char_map = teacher.char_map
 				if self.model.tag_dictionary.item2idx !=teacher.tag_dictionary.item2idx:
@@ -1417,7 +1149,7 @@ class ModelFinetuner(ModelDistiller):
 					mask=self.model.sequence_mask(lengths1, max_len).unsqueeze(-1).cuda().float()
 					with torch.no_grad():
 						# assign tags for the dependency parsing
-						teacher_input=loader.assign_tags(teacher.tag_type,teacher.tag_dictionary,teacher_input=teacher_input)
+						teacher_input=loader.assign_tags(self.model.tag_type,self.model.tag_dictionary,teacher_input=teacher_input)
 						teacher_input=teacher_input[0]
 						if self.model.tag_type=='dependency':
 							arc_scores, rel_scores=teacher.forward(teacher_input)
@@ -1441,18 +1173,18 @@ class ModelFinetuner(ModelDistiller):
 						#   assert 0, 'The sentence has been filled with teacher target!'
 						if self.model.biaf_attention:
 							try:
-								sentence.set_teacher_sentfeats(teacher.sent_feats[idx],self.distill_storage_mode)
+								sentence.set_teacher_sentfeats(teacher.sent_feats[idx],self.embeddings_storage_mode)
 							except:
 								pdb.set_trace()
 						if not faster:
 							if self.model.tag_type=="dependency":
 								if self.model.distill_factorize:
-									sentence.set_teacher_rel_prediction(rel_probs[idx][:len(sentence),:len(sentence),:], self.distill_storage_mode)
-								sentence.set_teacher_prediction(logits[idx][:len(sentence),:len(sentence)], self.distill_storage_mode)
+									sentence.set_teacher_rel_prediction(rel_probs[idx][:len(sentence),:len(sentence),:], self.embeddings_storage_mode)
+								sentence.set_teacher_prediction(logits[idx][:len(sentence),:len(sentence)], self.embeddings_storage_mode)
 							else:
-								sentence.set_teacher_prediction(logits[idx][:len(sentence)], self.distill_storage_mode)
+								sentence.set_teacher_prediction(logits[idx][:len(sentence)], self.embeddings_storage_mode)
 						else:
-							sentence.set_teacher_prediction(logits[idx]*mask[idx], self.distill_storage_mode)
+							sentence.set_teacher_prediction(logits[idx]*mask[idx], self.embeddings_storage_mode)
 						teacher_input[idx].clear_embeddings()
 					del logits
 					# res_input+=student_input
@@ -1487,11 +1219,11 @@ class ModelFinetuner(ModelDistiller):
 				target = self.corpus.targets[index]
 				if target not in teacher.targets:
 					continue
-				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=False,use_bert=use_bert, model = teacher, sentence_level_batch = self.sentence_level_batch)
+				loader=ColumnDataLoader(list(train_data),self.mini_batch_size,grouped_data=False,use_bert=use_bert)
 				loader.word_map = teacher.word_map
 				loader.char_map = teacher.char_map
 				if self.model.tag_dictionary.item2idx !=teacher.tag_dictionary.item2idx:
-					# pdb.set_trace()
+					pdb.set_trace()
 					assert 0, "the tag_dictionaries of the teacher and student are not same"
 				for batch in loader:
 					counter+=len(batch)
@@ -1505,7 +1237,8 @@ class ModelFinetuner(ModelDistiller):
 					mask=self.model.sequence_mask(lengths1, max_len).unsqueeze(-1).cuda().long()
 					lengths1=lengths1.long()
 					with torch.no_grad():
-						teacher_input=loader.assign_tags(teacher.tag_type,teacher.tag_dictionary,teacher_input=teacher_input)
+
+						teacher_input=loader.assign_tags(self.model.tag_type,self.model.tag_dictionary,teacher_input=teacher_input)
 						teacher_input=teacher_input[0]
 						if self.model.tag_type=='dependency':
 							mask[:,0] = 0
@@ -1519,7 +1252,7 @@ class ModelFinetuner(ModelDistiller):
 									arc_probs = arc_scores.softmax(-1)
 									rel_probs = rel_scores.softmax(-1)
 									arc_rel_probs = arc_probs.unsqueeze(-1) * rel_probs
-									arc_rel_scores = (arc_rel_probs+1e-100).log()
+									arc_rel_scores = (arc_rel_probs+1e-12).log()
 									dist=generate_tree(arc_rel_scores,mask.squeeze(-1).long(),is_mst=self.model.is_mst)
 									decode_idx = dist.topk(best_k)
 									decode_idx = decode_idx.permute(1,2,3,4,0)
@@ -1572,7 +1305,7 @@ class ModelFinetuner(ModelDistiller):
 									arc_probs = arc_scores.softmax(-1)
 									rel_probs = rel_scores.softmax(-1)
 									arc_rel_probs = arc_probs.unsqueeze(-1) * rel_probs
-									arc_rel_scores = (arc_rel_probs+1e-100).log()
+									arc_rel_scores = (arc_rel_probs+1e-12).log()
 									# arc_rel_scores.masked_fill_(~mask.unsqueeze(1).unsqueeze(1).bool(), float(-1e9))
 									dist=generate_tree(arc_rel_scores,mask.squeeze(-1).long(),is_mst=self.model.is_mst)
 								else:
@@ -1584,278 +1317,26 @@ class ModelFinetuner(ModelDistiller):
 							else:
 								# forward_var = self.model._forward_alg(logits, lengths1, distill_mode=True)
 								# backward_var = self.model._backward_alg(logits, lengths1)
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]-=1e12
 								if not hasattr(teacher,'transitions'):
+
 									forward_backward_score = logits
 								else:
 									forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True)
 									backward_var = teacher._backward_alg(logits, lengths1)
 									forward_backward_score = (forward_var + backward_var) * mask.float()
-
-
-									# pdb.set_trace()
-									# temperature = 10
-									# partition_score = teacher._forward_alg(logits,lengths1, T = temperature)
-									# forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True, T = temperature)
-									# backward_var = teacher._backward_alg(logits, lengths1, T = temperature)
-									# forward_backward_score2 = (forward_var + backward_var) * mask.float()
-									# fw_bw_partition = forward_backward_score2.logsumexp(-1)
-									# fw_bw_partition = fw_bw_partition * mask.squeeze(-1)
-									# print(((fw_bw_partition - partition_score[:,None]) * mask.squeeze(-1)).abs().max())
-									# print(max(lengths1))
-
-									# (logits[:,0]/temperature+teacher.transitions[None,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]/temperature).logsumexp(-1)
-									# (teacher.transitions[teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]/temperature).logsumexp(-1)
-									# backward_partition = teacher._backward_alg(logits,lengths1, distill_mode = False)
-									# print(((forward_backward_score.logsumexp(-1)[:,0]-partition_score).abs()).max())
-									# print((backward_partition-partition_score).abs().max())
-									# print((((forward_backward_score.logsumexp(-1)[:,0]-partition_score).abs())>0).sum()/float(len(forward_backward_score)))
-									# print((((backward_partition-partition_score).abs())>0).sum()/float(len(forward_backward_score)))
-									# print(max(lengths1))
-									# torch.logsumexp(forward_backward_score,-1)
-									# temp_var = forward_var[range(forward_var.shape[0]), lengths1-1, :]
-									# terminal_var = temp_var + teacher.transitions[teacher.tag_dictionary.get_idx_for_item(STOP_TAG)][None,:]
-									# temp_var = backward_var[range(forward_var.shape[0]), 0, :]
-									# terminal_var = temp_var + teacher.transitions[:,teacher.tag_dictionary.get_idx_for_item(START_TAG)][None,:]
-									# forward_backward_score.logsumexp(-1)
-						if self.model.distill_exact:
-							batch_range=torch.arange(logits.shape[0])
-							binary_mask=self.model.sequence_mask(lengths1-1, max_len-1).to(flair.device).long()
-							# pdb.set_trace()
-							if not hasattr(teacher,'transitions'):
-								# add temperature in the score
-								logits=logits/self.model.temperature
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]-=1e12
-								# ============ debug ===========
-								# pdb.set_trace()
-								# if binary_mask.shape[1]>1:
-								#   T=5
-								#   joint_score = (logits[:,:-1,None,:]+logits[:,1:,:,None])/T
-								#   joint_prob2 = torch.softmax(joint_score.view(joint_score.shape[0],joint_score.shape[1],-1),-1)
-									
-
-								#   maxent_prob = (logits/T).softmax(-1)
-								#   joint_prob = maxent_prob[:,:-1,None,:]*maxent_prob[:,1:,:,None]
-								#   joint_prob = joint_prob.view(joint_prob.shape[0],joint_prob.shape[1],-1)
-								#   print((joint_prob-joint_prob2).abs().sum([-1,-2]).max())
-								#   print(max(lengths1))
-								# ============ debug ===========
-
-
-								maxent_prob = logits.softmax(-1)
-								# pdb.set_trace()
-								# y_i * y_{i-1} -> (y_i,y_{i-1})
-								# right
-								joint_prob = maxent_prob[:,:-1,None,:]*maxent_prob[:,1:,:,None]
-								# forward_backward_score = torch.log(joint_prob+1e-12)
-
-
-								forward_backward_score = joint_prob
-								forward_backward_score = forward_backward_score * binary_mask[:,:,None,None]
-								start_score = logits[:,0]
-								end_score = logits[batch_range,lengths1-1]
-								if forward_backward_score.shape[1] != 0:
-									forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1)
-								else:
-									forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],forward_backward_score.shape[2]*forward_backward_score.shape[3])
-							else:
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]-=1e12
-								logits[:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]-=1e12
-
-								# N x B x L_{i-1}
-								forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True)
-								# N x B x L_{i}
-								backward_var = teacher._backward_alg(logits, lengths1)
-								# N x B x L_{i} x L_{i-1}
-								structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:])
-								# N x B x L_{i-1} x L_{i}
-								# forward_var: a[0], a[1], ..., a[n-2]
-								# backward_var: b[1], a[2], ..., b[n-1]
-								# structure_score: s[1,0], s[2,1], ..., s[n-1,n-2] (so without s[0,start], s[end,n-1])
-								forward_backward_score = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float() / self.model.temperature
-
-								start_score = (structure_score[:,0,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]+backward_var[:,0,:])/self.model.temperature
-
-								end_score = (teacher.transitions[None,teacher.tag_dictionary.get_idx_for_item(STOP_TAG),:]+forward_var[batch_range,lengths1-1,:])/self.model.temperature
-
-								#=============== debug ================
-								# if binary_mask.shape[1]>1:
-								#   # temperature = 10
-								#   temperature = 5
-								#   temp_partition_score = teacher._forward_alg(logits, lengths1)
-								#   # N x B x L_{i-1}
-								#   forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True)
-								#   # N x B x L_{i}
-								#   backward_var = teacher._backward_alg(logits, lengths1)
-								#   # N x B x L_{i} x L_{i-1}
-								#   structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:])
-								#   # N x B x L_{i-1} x L_{i}
-								#   # forward_var: a[0], a[1], ..., a[n-2]
-								#   # backward_var: b[1], a[2], ..., b[n-1]
-								#   # structure_score: s[1,0], s[2,1], ..., s[n-1,n-2] (so without s[0,start], s[end,n-1])
-								#   forward_backward_score = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float()/temperature
-
-
-								#   fw_bw_partition = forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1).logsumexp(-1)
-
-
-								#   temp_partition_score = teacher._forward_alg(logits, lengths1,T=temperature)
-								#   print(((fw_bw_partition - temp_partition_score[:,None])*mask.squeeze(-1)[:,1:]).abs().max())
-								#   print(max(lengths1))
-								#   # N x B x L_{i-1}
-								#   forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True, T = 1)
-								#   # N x B x L_{i}
-								#   backward_var = teacher._backward_alg(logits, lengths1, T = 1)
-								#   # N x B x L_{i} x L_{i-1}
-								#   structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:])
-								#   # N x B x L_{i-1} x L_{i}
-								#   # forward_var: a[0], a[1], ..., a[n-2]
-								#   # backward_var: b[1], a[2], ..., b[n-1]
-								#   # structure_score: s[1,0], s[2,1], ..., s[n-1,n-2] (so without s[0,start], s[end,n-1])
-								#   pdb.set_trace()
-								#   forward_backward_score2 = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float()/ self.model.temperature
-								#   fw_bw_partition2 = forward_backward_score2.view(forward_backward_score2.shape[0],forward_backward_score2.shape[1],-1).logsumexp(-1)
-
-								#   forward_backward_score2[:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]= 0
-								#   forward_backward_score2[:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]= 0
-								#   forward_backward_score2[:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]= 0
-
-								#   forward_backward_score2[:,:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]= 0
-								#   forward_backward_score2[:,:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]= 0
-								#   forward_backward_score2[:,:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]= 0
-
-								#   forward_backward_score[:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]= 0
-								#   forward_backward_score[:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]= 0
-								#   forward_backward_score[:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]= 0
-
-								#   forward_backward_score[:,:,:,teacher.tag_dictionary.get_idx_for_item(STOP_TAG)]= 0
-								#   forward_backward_score[:,:,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]= 0
-								#   forward_backward_score[:,:,:,teacher.tag_dictionary.get_idx_for_item('<unk>')]= 0
-
-								#   print(((fw_bw_partition - temp_partition_score[:,None])*mask.squeeze(-1)[:,1:]).abs().max())
-
-								#   print((fw_bw_partition2-fw_bw_partition).sum([-1,-2]))
-								#   print(max(lengths1))
-
-								# if binary_mask.shape[1] == 2 and 0:
-								#   pdb.set_trace()
-								#   # 2,1 -> 3,2,1 || 3,2 -> 3,2,1
-								#   temperature = 5
-								#   # partition_score = teacher._forward_alg(logits, lengths1)
-								#   # structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:]) * mask.unsqueeze(-1)
-								#   # start_score=structure_score[:,0,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]
-								#   # end_score = teacher.transitions[None,teacher.tag_dictionary.get_idx_for_item(STOP_TAG),:]
-
-								#   # all_sent_scores = (start_score[:,None,:] + structure_score[:,1,:,:]).unsqueeze(1)+(structure_score[:,2,:,:] + end_score[:,:,None]).unsqueeze(-1)
-								#   # all_sent_partition = all_sent_scores.view(all_sent_scores.shape[0],-1).logsumexp(-1) * (mask.sum([-1,-2])==3)
-
-								#   temp_partition_score = teacher._forward_alg(logits, lengths1,T=temperature)
-								#   temp_all_sent_scores = all_sent_scores/temperature
-								#   temp_all_sent_partition = temp_all_sent_scores.view(temp_all_sent_scores.shape[0],-1).logsumexp(-1)
-								#   sent_mask=(mask.sum([-1,-2])==3)
-
-								#   # N x B x L_{i-1}
-								#   forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True, T = temperature)
-								#   # N x B x L_{i}
-								#   backward_var = teacher._backward_alg(logits, lengths1, T = temperature)
-								#   # N x B x L_{i} x L_{i-1}
-								#   structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:])/temperature
-								#   # N x B x L_{i-1} x L_{i}
-								#   # forward_var: a[0], a[1], ..., a[n-2]
-								#   # backward_var: b[1], a[2], ..., b[n-1]
-								#   # structure_score: s[1,0], s[2,1], ..., s[n-1,n-2] (so without s[0,start], s[end,n-1])
-								#   forward_backward_score = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float()
-
-								#   fw_bw_partition = forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1).logsumexp(-1)
-								#   print(((fw_bw_partition - temp_partition_score[:,None])*mask.squeeze(-1)[:,1:]).abs().max())
-								#   print(max(lengths1))
-
-
-								#   start_score = (structure_score[:,0,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]+backward_var[:,0,:])/temperature
-
-								#   end_score = (teacher.transitions[None,teacher.tag_dictionary.get_idx_for_item(STOP_TAG),:]+forward_var[batch_range,lengths1-1,:])/temperature
-									
-									
-								#   str_score = structure_score*mask[:,:,:,None]
-								#   start_score = str_score[:,0] + teacher.transitions[None,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]
-								#   end_score = teacher.transitions[None,teacher.tag_dictionary.get_idx_for_item(STOP_TAG),:]
-								#   all_sent_scores = start_score[:,:,] + str_score[:,1] + start_score
-
-
-								#   all_sent_scores = (structure_score*mask[:,:,None,None])[:,0] + (start_score[:,None,:] + end_score[:,:,None]).view(batch_size,-1)
-
-								#   teacher_overall_score = (start_score.unsqueeze(1)+forward_backward_score[:,0]).unsqueeze(1)+(forward_backward_score[:,1]+end_score.unsqueeze(-1)).unsqueeze(-1)
-								#   teacher_overall_score0 = teacher_overall_score.view(teacher_overall_score.shape[0],-1)
-								#   # teacher_overall_score = teacher_overall_score
-								#   teacher_overall_prob = teacher_overall_score0.softmax(-1)
-								#   fw_bw_partition = forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1).logsumexp(-1)
-
-								#   #===============
-								#   # N x B x L_{i-1}
-								#   forward_var = teacher._forward_alg(logits, lengths1, distill_mode=True, T = 1)
-								#   # N x B x L_{i}
-								#   backward_var = teacher._backward_alg(logits, lengths1, T = 1)
-								#   # N x B x L_{i} x L_{i-1}
-								#   structure_score = (logits[:,:,:,None] + teacher.transitions[None,None,:,:])
-								#   # N x B x L_{i-1} x L_{i}
-								#   # forward_var: a[0], a[1], ..., a[n-2]
-								#   # backward_var: b[1], a[2], ..., b[n-1]
-								#   # structure_score: s[1,0], s[2,1], ..., s[n-1,n-2] (so without s[0,start], s[end,n-1])
-								#   forward_backward_score = (forward_var[:,:-1,None,:] + backward_var[:,1:,:,None]+ structure_score[:,1:]) * binary_mask.unsqueeze(-1).unsqueeze(-1).float()
-
-								#   start_score = (structure_score[:,0,:,teacher.tag_dictionary.get_idx_for_item(START_TAG)]+backward_var[:,0,:])
-
-								#   end_score = (teacher.transitions[None,teacher.tag_dictionary.get_idx_for_item(STOP_TAG),:]+forward_var[batch_range,lengths1-1,:])
-									
-								#   teacher_overall_score = (start_score.unsqueeze(1)+forward_backward_score[:,0]).unsqueeze(1)+(forward_backward_score[:,1]+end_score.unsqueeze(-1)).unsqueeze(-1)
-								#   teacher_overall_score = teacher_overall_score.view(teacher_overall_score.shape[0],-1)
-								#   teacher_overall_score = teacher_overall_score/temperature
-								#   teacher_overall_prob2 = teacher_overall_score.softmax(-1)
-
-								#=============== debug ==============
-								# pdb.set_trace()
-								# partition_score = teacher._forward_alg(logits,lengths1, T=self.model.temperature)
-								# print(((forward_backward_score.logsumexp([-1,-2])[:,0]-partition_score)*((lengths1-1)>0).type_as(partition_score)).abs().max())
-								# print((((forward_backward_score.logsumexp([-1,-2])[:,0]-partition_score)*((lengths1-1)>0).type_as(partition_score)).abs()>0).sum()/float(len(forward_backward_score)))
-								# print(max(lengths1))
-								#=============== debug ==============
-								if forward_backward_score.shape[1] != 0:
-									forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],-1)
-								else:
-									forward_backward_score=forward_backward_score.view(forward_backward_score.shape[0],forward_backward_score.shape[1],forward_backward_score.shape[2]*forward_backward_score.shape[3])
-								forward_backward_score = forward_backward_score.softmax(-1)
-
-
-								# ===== debug =====
-								# logits = structure_score.view(structure_score.shape[0],structure_score.shape[1],-1)
-								# ===== debug =====
-							# All scores represent S(i-1,i)
-							# N x B x L_{i-1} x L_{i} -> N x B
-							
 							
 					for idx, sentence in enumerate(teacher_input):
 						# if hasattr(sentence,'_teacher_target'):
 						#   assert 0, 'The sentence has been filled with teacher target!'
 						if self.model.distill_crf:
 							if self.model.crf_attention or self.model.tag_type=='dependency':
-								sentence.set_teacher_weights(path_score[idx], self.distill_storage_mode)
-							sentence.set_teacher_target(decode_idx[idx]*mask[idx], self.distill_storage_mode)
+								sentence.set_teacher_weights(path_score[idx], self.embeddings_storage_mode)
+							sentence.set_teacher_target(decode_idx[idx]*mask[idx], self.embeddings_storage_mode)
 							if hasattr(self.model,'distill_rel') and self.model.distill_rel:
-								sentence.set_teacher_rel_target(rel_predictions[idx]*mask[idx], self.distill_storage_mode)
-						if self.model.distill_posterior or self.model.distill_exact:
-							# sentence.set_teacher_posteriors(forward_backward_score[idx][:len(sentence)-1,:len(sentence)-1], self.distill_storage_mode)
-							sentence.set_teacher_posteriors(forward_backward_score[idx], self.distill_storage_mode)
-							if self.model.distill_exact:
-								# ===== debug =====
-								# sentence.set_teacher_prediction(logits[idx,:len(sentence)], self.distill_storage_mode)
-								# ===== debug =====
-								sentence.set_teacher_startscores(start_score[idx], self.distill_storage_mode)
-								sentence.set_teacher_endscores(end_score[idx], self.distill_storage_mode)
+								sentence.set_teacher_rel_target(rel_predictions[idx]*mask[idx], self.embeddings_storage_mode)
+						if self.model.distill_posterior:
+							# sentence.set_teacher_posteriors(forward_backward_score[idx][:len(sentence)-1,:len(sentence)-1], self.embeddings_storage_mode)
+							sentence.set_teacher_posteriors(forward_backward_score[idx], self.embeddings_storage_mode)
 						teacher_input[idx].clear_embeddings()
 					del logits
 
@@ -1879,12 +1360,6 @@ class ModelFinetuner(ModelDistiller):
 					targets=posteriors.copy()
 				except:
 					pdb.set_trace()
-			if self.model.distill_exact:
-				# ===== debug ====
-				# targets=[x._teacher_prediction for x in batch]
-				# ===== debug ====
-				start_scores = [x._teacher_startscores for x in batch]
-				end_scores = [x._teacher_endscores for x in batch]
 			if is_token_att:
 				sentfeats=[x._teacher_sentfeats for x in batch]
 				sentfeats_lens=[len(x[0]) for x in sentfeats]
@@ -1895,18 +1370,17 @@ class ModelFinetuner(ModelDistiller):
 				lens=[len(x[0]) for x in targets]
 				if hasattr(self.model,'distill_rel') and self.model.distill_rel:
 					rel_targets=[x._teacher_rel_target for x in batch]
-			if (not is_crf and not is_posterior):
+			if not is_crf and not is_posterior:
 				targets=[x._teacher_prediction for x in batch]
 				if hasattr(self.model, 'distill_factorize') and self.model.distill_factorize:
 					rel_targets=[x._teacher_rel_prediction for x in batch]
-				# pdb.set_trace()
 				lens=[len(x[0]) for x in targets]
 			sent_lens=[len(x) for x in batch]
 
 			if is_posterior:
 				assert posterior_lens==lens, 'lengths of two targets not match'
 			
-			if max(lens)>min(lens) or max(sent_lens)!=max(lens) or (is_posterior and self.model.tag_type=='dependency') or (max(sent_lens)-1!=max(lens) and self.model.distill_exact):
+			if max(lens)>min(lens) or max(sent_lens)!=max(lens) or (is_posterior and self.model.tag_type=='dependency'):
 				# if max(sent_lens)!=max(lens):
 				max_shape=max(sent_lens)
 				for index, target in enumerate(targets):
@@ -1914,13 +1388,8 @@ class ModelFinetuner(ModelDistiller):
 					new_rel_targets=[]
 					new_posteriors=[]
 					new_sentfeats=[]
-					new_starts=[]
-					new_ends=[]
 					if is_posterior:
 						post_vals=posteriors[index]
-					if self.model.distill_exact:
-						start_vals=start_scores[index]
-						end_vals=end_scores[index]
 					if is_token_att:
 						sentfeats_vals=sentfeats[index]
 					for idx, val in enumerate(target):
@@ -1971,27 +1440,11 @@ class ModelFinetuner(ModelDistiller):
 								new_sentfeat[:sent_lens[index]]=sentfeats_val[:sent_lens[index]]
 								new_sentfeats.append(new_sentfeat)
 							if is_posterior:
-								bias = 0
-								# pdb.set_trace()
-								if self.model.distill_exact:
-									bias = 1
-								# if max_shape - bias == 0:
-								# pdb.set_trace()
-								# if sent_lens[index] == 1:
-								#   pdb.set_trace()
 								post_val=post_vals[idx]
-								shape=[max_shape-bias]+list(post_val.shape[1:])
+								shape=[max_shape]+list(post_val.shape[1:])
 								new_posterior=torch.zeros(shape).type_as(post_val)
-								new_posterior[:sent_lens[index]-bias]=post_val[:sent_lens[index]-bias]
+								new_posterior[:sent_lens[index]]=post_val[:sent_lens[index]]
 								new_posteriors.append(new_posterior)
-							# pdb.set_trace()
-							if self.model.distill_exact:
-								start_val=start_vals[idx]
-								shape=[max_shape]+list(start_val.shape[1:])
-								new_starts.append(start_val)
-
-								end_val=end_vals[idx]
-								new_ends.append(end_val)
 							
 					if is_crf:
 						batch[index]._teacher_target=new_targets
@@ -1999,28 +1452,19 @@ class ModelFinetuner(ModelDistiller):
 							batch[index]._teacher_rel_target=new_rel_targets
 					if is_posterior:
 						batch[index]._teacher_posteriors=new_posteriors
-					if self.model.distill_exact:
-						batch[index]._teacher_startscores=new_starts
-						batch[index]._teacher_endscores=new_ends
 					if is_token_att:
 						batch[index]._teacher_sentfeats=new_sentfeats
-					if (not is_crf and not is_posterior):
+					if not is_crf and not is_posterior:
 						if hasattr(self.model, 'distill_factorize') and self.model.distill_factorize:
 							batch[index]._teacher_rel_prediction=new_rel_targets
 						batch[index]._teacher_prediction=new_targets
 			if hasattr(batch,'teacher_features'):
 				if is_posterior:
-					try:
-						batch.teacher_features['posteriors']=torch.stack([sentence.get_teacher_posteriors() for sentence in batch],0).cpu()
-					except:
-						pdb.set_trace()
+					batch.teacher_features['posteriors']=torch.stack([sentence.get_teacher_posteriors() for sentence in batch],0).cpu()
 					# lens=[len(x) for x in batch]
 					# posteriors = batch.teacher_features['posteriors']
 					# if max(lens) == posteriors.shape[-1]:
 					#   pdb.set_trace()
-				if self.model.distill_exact:
-					batch.teacher_features['start_scores']=torch.stack([sentence.get_teacher_startscores() for sentence in batch],0).cpu()
-					batch.teacher_features['end_scores']=torch.stack([sentence.get_teacher_endscores() for sentence in batch],0).cpu()
 				if (not is_crf and not is_posterior):
 					batch.teacher_features['distributions'] = torch.stack([sentence.get_teacher_prediction() for sentence in batch],0).cpu()
 					if hasattr(self.model, 'distill_factorize') and self.model.distill_factorize:
@@ -2095,14 +1539,14 @@ class ModelFinetuner(ModelDistiller):
 			# print('total_length: ',total_length)
 		
 	def final_test(
-		self, base_path: Path, eval_mini_batch_size: int, num_workers: int = 8, overall_test: bool = True, quiet_mode: bool = False, nocrf: bool = False, predict_posterior: bool = False, debug: bool = False, keep_embedding: int = -1, sort_data=False,
-	):
+		self, base_path: Path, eval_mini_batch_size: int, num_workers: int = 8, overall_test: bool = True, quiet_mode: bool = False, nocrf: bool = False, predict_posterior: bool = False, debug: bool = False, keep_embedding: int = -1,
+		):
 
 		log_line(log)
 		
 
 		self.model.eval()
-		
+		# pdb.set_trace()
 		if quiet_mode:
 			#blockPrint()
 			log.disabled=True
@@ -2114,6 +1558,8 @@ class ModelFinetuner(ModelDistiller):
 			log.info("Testing using final model ...")
 		if debug:
 			self.model.debug=True
+			# if hasattr(self.model,'transitions'):
+			# 	self.model.transitions = torch.nn.Parameter(torch.randn(self.model.tagset_size, self.model.tagset_size).to(flair.device))
 		else:
 			self.model.debug=False
 		if nocrf:
@@ -2122,33 +1568,24 @@ class ModelFinetuner(ModelDistiller):
 			self.model.predict_posterior=True
 		if keep_embedding>-1:
 			self.model.keep_embedding=keep_embedding
+		#------ner dp------------
 		
-		# set embedding.fine_tune to False, so that the function `gpu_friendly_assign_embedding` is able to work.
-		self.embeddings_storage_mode = 'cpu'
-		for embedding in self.model.embeddings.embeddings:
-			if (hasattr(embedding,'fine_tune') and embedding.fine_tune):
-				embedding.fine_tune = False
 		if overall_test:
-			loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert,tokenizer=self.bert_tokenizer, model = self.model, sentence_level_batch = self.sentence_level_batch, sort_data=sort_data)
+			loader=ColumnDataLoader(list(self.corpus.test),eval_mini_batch_size, use_bert=self.use_bert,tokenizer=self.bert_tokenizer, sort_data=False, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 			loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-			with torch.no_grad():
-				# pdb.set_trace()
-				self.gpu_friendly_assign_embedding([loader])
-			for x in sorted(loader[0].features.keys()):
-				print(x)
 			test_results, test_loss = self.model.evaluate(
 				loader,
 				out_path=base_path / "test.tsv",
-				embeddings_storage_mode="cpu",
+				embeddings_storage_mode="none",
 			)
 			test_results: Result = test_results
 			log.info(test_results.log_line)
 			log.info(test_results.detailed_results)
 			log_line(log)
-			# if self.model.embedding_selector:
-			#   print(sorted(loader[0].features.keys()))
-			#   print(self.model.selector)
-			#   print(torch.argmax(self.model.selector,-1))
+			if self.model.embedding_selector:
+				print(sorted(loader[0].features.keys()))
+				print(self.model.selector)
+				print(torch.argmax(self.model.selector,-1))
 		if quiet_mode:
 			enablePrint()
 			if overall_test:
@@ -2166,16 +1603,18 @@ class ModelFinetuner(ModelDistiller):
 					print(embedding_name,end=' ')
 				print('Average', end=' ')
 				print(test_results.main_score, end=' ')
-
 		# if we are training over multiple datasets, do evaluation for each
+		# paras_1 = list(self.model.named_parameters())
+		# import copy
+		# model_2 = copy.deepcopy(self.model)
+		# model_2 = model_2.load(base_path / "best-model.pt")
+		# paras_2 = list(model_2.named_parameters())
 		if type(self.corpus) is MultiCorpus:
 			for subcorpus in self.corpus.corpora:
 				log_line(log)
 				log.info('current corpus: '+subcorpus.name)
-				loader=ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, model = self.model, sentence_level_batch = self.sentence_level_batch, sort_data=sort_data)
+				loader=ColumnDataLoader(list(subcorpus.test),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-				with torch.no_grad():
-					self.gpu_friendly_assign_embedding([loader])
 				current_result, test_loss = self.model.evaluate(
 					loader,
 					out_path=base_path / f"{subcorpus.name}-test.tsv",
@@ -2198,15 +1637,13 @@ class ModelFinetuner(ModelDistiller):
 						print(embedding_name,end=' ')
 					print(subcorpus.name,end=' ')
 					print(current_result.main_score,end=' ')
-
+		
 		elif type(self.corpus) is ListCorpus:
 			for index,subcorpus in enumerate(self.corpus.test_list):
 				log_line(log)
 				log.info('current corpus: '+self.corpus.targets[index])
-				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, model = self.model, sentence_level_batch = self.sentence_level_batch, sort_data=sort_data)
+				loader=ColumnDataLoader(list(subcorpus),eval_mini_batch_size,use_bert=self.use_bert,tokenizer=self.bert_tokenizer, word_map = self.model.word_map, char_map = self.model.char_map, sentence_level_batch = self.sentence_level_batch)
 				loader.assign_tags(self.model.tag_type,self.model.tag_dictionary)
-				with torch.no_grad():
-					self.gpu_friendly_assign_embedding([loader])
 				current_result, test_loss = self.model.evaluate(
 					loader,
 					out_path=base_path / f"{self.corpus.targets[index]}-test.tsv",
@@ -2229,12 +1666,23 @@ class ModelFinetuner(ModelDistiller):
 						print(embedding_name,end=' ')
 					print(self.corpus.targets[index],end=' ')
 					print(current_result.main_score,end=' ')
-		# if self.model.embedding_selector:
-		#       print(sorted(loader[0].features.keys()))
-		#       print(self.model.selector)
-		#       print(torch.argmax(self.model.selector,-1))
+		if self.model.embedding_selector:
+				print(sorted(loader[0].features.keys()))
+				print(self.model.selector)
+				print(torch.argmax(self.model.selector,-1))
 		if keep_embedding<0:
 			print()
+		# paras_dict1 = {}
+		# paras_dict2 = {}
+		# for para in paras_1:
+		# 	paras_dict1[para[0]] = para[1]
+		# for para in paras_2:
+		# 	paras_dict2[para[0]] = para[1]
+		
+		# for k,v in paras_dict1.items():
+		# 	print(k)
+		# 	print(torch.sum(abs(paras_dict1[k]-paras_dict2[k])))
+		# pdb.set_trace()
 		if overall_test:
 			# get and return the final test score of best model
 			final_score = test_results.main_score
@@ -2252,7 +1700,7 @@ class ModelFinetuner(ModelDistiller):
 		stop_early: bool = False,
 		smoothing_factor: float = 0.98,
 		**kwargs,
-	) -> Path:
+		) -> Path:
 		best_loss = None
 		moving_avg_loss = 0
 
@@ -2335,62 +1783,6 @@ class ModelFinetuner(ModelDistiller):
 		log_line(log)
 
 		return Path(learning_rate_tsv)
-
-	# def gpu_friendly_assign_embedding(self,loaders):
-	#   # pdb.set_trace()
-	#   # torch.cuda.empty_cache()
-	#   for embedding in self.model.embeddings.embeddings:
-	#       if ('WordEmbeddings' not in embedding.__class__.__name__ and 'Char' not in embedding.__class__.__name__ and 'Lemma' not in embedding.__class__.__name__ and 'POS' not in embedding.__class__.__name__) and not (hasattr(embedding,'fine_tune') and embedding.fine_tune):
-	#           print(embedding.name)
-	#           # 
-	#           embedding.to(flair.device)
-	#           for loader in loaders:
-	#               for sentences in loader:
-	#                   lengths: List[int] = [len(sentence.tokens) for sentence in sentences]
-	#                   longest_token_sequence_in_batch: int = max(lengths)
-	#                   # if longest_token_sequence_in_batch>100:
-	#                   #   pdb.set_trace()
-	#                   embedding.embed(sentences)
-	#                   store_embeddings(sentences, self.embeddings_storage_mode)
-	#           # torch.cuda.empty_cache()
-	#           # torch.cuda.empty_cache()
-	#           embedding=embedding.to('cpu')
-	#       else:
-	#           embedding=embedding.to(flair.device)
-	#   # torch.cuda.empty_cache()
-	#   log.info("Finished Embeddings Assignments")
-	#   return 
-	# def assign_predicted_embeddings(self,doc_dict,embedding,file_name):
-	#   # torch.cuda.empty_cache()
-	#   lm_file = h5py.File(file_name, "r")
-	#   for key in doc_dict:
-	#       if key == 'start':
-	#           for i, sentence in enumerate(doc_dict[key]):
-	#               for token, token_idx in zip(sentence.tokens, range(len(sentence.tokens))):
-	#                   word_embedding = torch.zeros(embedding.embedding_length).float()
-	#                   word_embedding = torch.FloatTensor(word_embedding)
-
-	#                   token.set_embedding(embedding.name, word_embedding)
-	#           continue
-	#       group = lm_file[key]
-	#       num_sentences = len(list(group.keys()))
-	#       sentences_emb = [group[str(i)][...] for i in range(num_sentences)]
-	#       try: 
-	#           assert len(doc_dict[key])==len(sentences_emb)
-	#       except:
-	#           pdb.set_trace()
-	#       for i, sentence in enumerate(doc_dict[key]):
-	#           for token, token_idx in zip(sentence.tokens, range(len(sentence.tokens))):
-	#               word_embedding = sentences_emb[i][token_idx]
-	#               word_embedding = torch.from_numpy(word_embedding).view(-1)
-
-	#               token.set_embedding(embedding.name, word_embedding)
-	#           store_embeddings([sentence], 'cpu')
-	#       # for idx, sentence in enumerate(doc_dict[key]):
-	#   log.info("Loaded predicted embeddings: "+file_name)
-	#   return 
-	def get_subtoken_length(self,sentence):
-		return len(self.model.embeddings.embeddings[0].tokenizer.tokenize(sentence.to_tokenized_string()))
 
 	def init_biaf(self, student_hidden, teacher_hidden, num_teachers=1):
 		# self.teacher_hidden = teacher_hidden

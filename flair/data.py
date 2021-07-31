@@ -16,6 +16,8 @@ from torch.utils.data.dataset import ConcatDataset, Subset
 from flair.file_utils import Tqdm
 
 log = logging.getLogger("flair")
+
+import numpy as np
 import pdb
 
 class Dictionary:
@@ -196,7 +198,8 @@ class Token(DataPoint):
     def add_tags_proba_dist(self, tag_type: str, tags: List[Label]):
         self.tags_proba_dist[tag_type] = tags
 
-    def add_tag(self, tag_type: str, tag_value: str, confidence=1.0):
+    def add_tag(self, tag_type: str, tag_value: str, confidence=1.0):   # e.g. tag_type: 'text', 'pos', 'chunk', 'ner', tag_value: 'EU', 'NNP', 'I-NP', 'B-ORG' 
+
         tag = Label(tag_value, confidence)
         self.tags[tag_type] = tag
 
@@ -348,7 +351,7 @@ class Sentence(DataPoint):
         use_tokenizer: bool = False,
         labels: Union[List[Label], List[str]] = None,
         language_code: str = None,
-    ):
+        ):
 
         super(Sentence, self).__init__()
 
@@ -366,8 +369,6 @@ class Sentence(DataPoint):
         self._teacher_weights = []
         self._teacher_sentfeats = []
         self._teacher_posteriors = []
-        self._teacher_startscores = []
-        self._teacher_endscores = []
         # if text is passed, instantiate sentence with tokens (words)
         if text is not None:
 
@@ -549,6 +550,8 @@ class Sentence(DataPoint):
     def embedding(self):
         return self.get_embedding()
 
+
+
     def set_embedding(self, name: str, vector):
         device = flair.device
         if len(self._embeddings.keys()) > 0:
@@ -701,18 +704,7 @@ class Sentence(DataPoint):
             labels = [l.to_dict() for l in self.labels]
 
         return {"text": self.to_original_text(), "labels": labels, "entities": entities}
-    def chunk_sentence(self,start_idx, end_idx):
-        new_tokens=[]
-        for token_id in range(start_idx,end_idx):
-            token = self.tokens[token_id]
-            new_tokens.append(token)
-            token.idx = len(new_tokens)
-        for token_id in range(0,start_idx):
-            self.tokens[token_id].clear_embeddings()
-        for token_id in range(end_idx,len(self.tokens)):
-            self.tokens[token_id].clear_embeddings()
-        self.tokens = new_tokens
-        self.tokenized = " ".join([t.text for t in self.tokens])
+
     def __getitem__(self, idx: int) -> Token:
         return self.tokens[idx]
 
@@ -777,10 +769,7 @@ class Sentence(DataPoint):
         self._teacher_sentfeats.append(vector.to(storage_mode, non_blocking=True))
     def set_teacher_posteriors(self, vector, storage_mode):
         self._teacher_posteriors.append(vector.to(storage_mode, non_blocking=True))
-    def set_teacher_startscores(self, vector, storage_mode):
-        self._teacher_startscores.append(vector.to(storage_mode, non_blocking=True))
-    def set_teacher_endscores(self, vector, storage_mode):
-        self._teacher_endscores.append(vector.to(storage_mode, non_blocking=True))
+
     def get_teacher_rel_prediction(self,pooling='mean',weight=None) -> torch.tensor:
         return self._get_teacher_prediction(self._teacher_rel_prediction,pooling=pooling,weight=weight)
     def get_teacher_prediction(self,pooling='mean',weight=None) -> torch.tensor:
@@ -795,10 +784,6 @@ class Sentence(DataPoint):
         return torch.stack(self._teacher_sentfeats,-2).to(flair.device)
     def get_teacher_posteriors(self) -> torch.tensor:
         return torch.stack(self._teacher_posteriors,-2).to(flair.device)
-    def get_teacher_startscores(self) -> torch.tensor:
-        return torch.stack(self._teacher_startscores,-2).to(flair.device)
-    def get_teacher_endscores(self) -> torch.tensor:
-        return torch.stack(self._teacher_endscores,-2).to(flair.device)
     def _get_teacher_prediction(self, _teacher_prediction,pooling='mean',weight=None) -> torch.tensor:
         device = flair.device
         target = torch.stack(_teacher_prediction)
@@ -827,6 +812,9 @@ class Sentence(DataPoint):
     def get_professor_prediction(self):
         device = flair.device
         return self._teacher_prediction[0].to(device)
+
+
+
 
 class FlairDataset(Dataset):
     @abstractmethod
@@ -898,12 +886,12 @@ class Corpus:
 
         return subset
         
-    def get_train_full_tokenset(self, max_tokens, min_freq, attr = 'text') -> List[list]:
+    def get_train_full_tokenset(self, max_tokens, min_freq) -> List[list]:
 
-        train_set = self._get_most_common_tokens(max_tokens, min_freq, attr = attr)
+        train_set = self._get_most_common_tokens(max_tokens, min_freq)
 
         full_sents = self.get_all_sentences()
-        full_tokens = [getattr(token,attr) for sublist in full_sents for token in sublist]
+        full_tokens = [token.text for sublist in full_sents for token in sublist]
 
         tokens_and_frequencies = Counter(full_tokens)
         tokens_and_frequencies = tokens_and_frequencies.most_common()
@@ -941,8 +929,8 @@ class Corpus:
 
         return vocab_dictionary
 
-    def _get_most_common_tokens(self, max_tokens, min_freq, attr = 'text') -> List[str]:
-        tokens_and_frequencies = Counter(self._get_all_tokens(attr))
+    def _get_most_common_tokens(self, max_tokens, min_freq) -> List[str]:
+        tokens_and_frequencies = Counter(self._get_all_tokens())
         tokens_and_frequencies = tokens_and_frequencies.most_common()
 
         tokens = []
@@ -954,10 +942,10 @@ class Corpus:
             tokens.append(token)
         return tokens
 
-    def _get_all_tokens(self,attr='text') -> List[str]:
+    def _get_all_tokens(self) -> List[str]:
         tokens = list(map((lambda s: s.tokens), self.train))
         tokens = [token for sublist in tokens for token in sublist]
-        return list(map((lambda t: getattr(t,attr)), tokens))
+        return list(map((lambda t: t.text), tokens))
 
     def _downsample_to_proportion(self, dataset: Dataset, proportion: float):
 
@@ -1162,3 +1150,5 @@ def iob_iobes(tags):
         else:
             raise Exception("Invalid IOB format!")
     return new_tags
+
+
