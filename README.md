@@ -60,10 +60,10 @@ We follow our previous work to train the CoNLL named entity recognition (NER) te
 
 An alternative way is training the teacher models by yourself: 
 ```bash
-python train_with_teacher.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_de_monolingual_crf_sentloss_10patience_baseline_nodev_ner0.yaml #German
-python train_with_teacher.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_en_monolingual_crf_sentloss_10patience_baseline_nodev_ner0.yaml #English
-python train_with_teacher.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_es_monolingual_crf_sentloss_10patience_baseline_nodev_ner1.yaml #Spanish
-python train_with_teacher.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_nl_monolingual_crf_sentloss_10patience_baseline_nodev_ner1.yaml #Dutch
+python train.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_de_monolingual_crf_sentloss_10patience_baseline_nodev_ner0.yaml #German
+python train.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_en_monolingual_crf_sentloss_10patience_baseline_nodev_ner0.yaml #English
+python train.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_es_monolingual_crf_sentloss_10patience_baseline_nodev_ner1.yaml #Spanish
+python train.py --config config/multi_bert_origflair_300epoch_2000batch_0.1lr_256hidden_nl_monolingual_crf_sentloss_10patience_baseline_nodev_ner1.yaml #Dutch
 ```
 
 
@@ -71,10 +71,10 @@ python train_with_teacher.py --config config/multi_bert_origflair_300epoch_2000b
 
 Run:
 ```bash
-python train_with_teacher.py --config config/en_crf_ner.yaml #English
-python train_with_teacher.py --config config/de_crf_ner.yaml #German
-python train_with_teacher.py --config config/nl_crf_ner.yaml #Dutch
-python train_with_teacher.py --config config/es_crf_ner.yaml #Spanish
+python train.py --config config/en_crf_ner.yaml #English
+python train.py --config config/de_crf_ner.yaml #German
+python train.py --config config/nl_crf_ner.yaml #Dutch
+python train.py --config config/es_crf_ner.yaml #Spanish
 ```
 
 
@@ -86,14 +86,14 @@ The code is aviable in the branch DepKD. We follow the biaffine parser to train 
 
 An alternative way is training the teacher models by yourself: 
 ```bash
-python train_with_teacher.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_nocrf_fast_freeze_nodev_dependency30.yaml
+python train.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_nocrf_fast_freeze_nodev_dependency30.yaml
 ```
 
 ##### Training Student Models
 
 Run:
 ```bash
-python train_with_teacher.py --config config/ptb-dp_as_sl-1st.yaml
+python train.py --config config/ptb-dp_as_sl-1st.yaml
 ```
 
 ---
@@ -111,10 +111,10 @@ The teacher models are identical to the models in [Linear-Chain CRF⇒Linear-Cha
 
 Run:
 ```bash
-python train_with_teacher.py --config config/en_maxent_ner.yaml #English
-python train_with_teacher.py --config config/de_maxent_ner.yaml #German
-python train_with_teacher.py --config config/nl_maxent_ner.yaml #Dutch
-python train_with_teacher.py --config config/es_maxent_ner.yaml #Spanish
+python train.py --config config/en_maxent_ner.yaml #English
+python train.py --config config/de_maxent_ner.yaml #German
+python train.py --config config/nl_maxent_ner.yaml #Dutch
+python train.py --config config/es_maxent_ner.yaml #Spanish
 ```
 
 
@@ -126,14 +126,14 @@ The code is aviable in the branch DepKD. We follow our previous model to train t
 
 An alternative way is training the teacher models by yourself: 
 ```bash
-python train_with_teacher.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_2nd_nocrf_fast_freeze_nodev_dependency30.yaml
+python train.py --config config/word_char_500epoch_0.5inter_5000batch_0.002lr_400hidden_ptb_monolingual_2nd_nocrf_fast_freeze_nodev_dependency30.yaml
 ```
 
 ##### Training Student Models
 
 Run:
 ```bash
-python train_with_teacher.py --config config/ptb-dp_as_sl-2nd.yaml
+python train.py --config config/ptb-dp_as_sl-2nd.yaml
 ```
 
 ---
@@ -148,7 +148,7 @@ The teacher is a multilingual teacher trained on WikiAnn datasets with four lang
 
 Similarly, the teacher model can be trained by yourself: 
 ```
-python train_with_teacher.py --config config/multi-bert_10epoch_32batch_0.00005lr_10000lrrate_multilingual_nocrf_fast_relearn_sentbatch_sentloss_finetune_conlllang_nodev_panx_ner9.yaml
+python train.py --config config/multi-bert_10epoch_32batch_0.00005lr_10000lrrate_multilingual_nocrf_fast_relearn_sentbatch_sentloss_finetune_conlllang_nodev_panx_ner9.yaml
 ```
 
 ##### Training Student Models
@@ -157,10 +157,10 @@ In this case, we train the student model for four zero shot langauges, i.e. Basq
 
 For each language, run:
 ```
-python train_with_teacher.py --config config/ta_ner.yaml
-python train_with_teacher.py --config config/fa_ner.yaml
-python train_with_teacher.py --config config/eu_ner.yaml
-python train_with_teacher.py --config config/he_ner.yaml
+python train.py --config config/ta_ner.yaml
+python train.py --config config/fa_ner.yaml
+python train.py --config config/eu_ner.yaml
+python train.py --config config/he_ner.yaml
 ```
 
 ---
@@ -174,7 +174,7 @@ The code is available in the branch "case4". We follow previous work to train th
 
 To train a teacher model by yourself, you can follow the example command as follow:
 ```bash
-python train_with_teacher.py --config configs/conll_teachers/conll03_bs3500_lr1e-3_epoch1k1_flair_fastword_bert_de.yaml  
+python train.py --config configs/conll_teachers/conll03_bs3500_lr1e-3_epoch1k1_flair_fastword_bert_de.yaml  
 ```
 All config files are available in `configs/conll_teachers` and `configs/wikiann_teachers` 
 
@@ -182,14 +182,14 @@ All config files are available in `configs/conll_teachers` and `configs/wikiann_
 
 The example command to train a baseline student model:
 ```bash
-python train_with_teacher.py --config configs/train_students/baselines/conll_baseline_de.yaml    # CoNLL datasets, German
-python train_with_teacher.py --config configs/train_students/baselines/wikiann_baseline_en.yaml    # WikiAnn datasets, English
+python train.py --config configs/train_students/baselines/conll_baseline_de.yaml    # CoNLL datasets, German
+python train.py --config configs/train_students/baselines/wikiann_baseline_en.yaml    # WikiAnn datasets, English
 ```
 The example command to train a student model with structural knowledge distillation:
 ```bash
-python train_with_teacher.py --config configs/train_students/kd/conll_kd_es.yaml # CoNLL datasets, Spanish
-python train_with_teacher.py --config configs/train_students/kd/wikiann_kd_nl.yaml # WikiAnn datasets, Dutch
-python train_with_teacher.py --config configs/train_students/kd/wikiann_3k_kd_de.yaml # WikiAnn datasets with 3k unlabeled sentences, German
+python train.py --config configs/train_students/kd/conll_kd_es.yaml # CoNLL datasets, Spanish
+python train.py --config configs/train_students/kd/wikiann_kd_nl.yaml # WikiAnn datasets, Dutch
+python train.py --config configs/train_students/kd/wikiann_3k_kd_de.yaml # WikiAnn datasets with 3k unlabeled sentences, German
 ```
 All config files are availabel in `configs/train_students`
 
