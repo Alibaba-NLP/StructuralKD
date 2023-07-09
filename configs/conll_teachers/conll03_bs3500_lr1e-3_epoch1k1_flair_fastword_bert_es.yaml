@@ -1,0 +1,96 @@
+ModelFinetuner:
+  direct_upsample_rate: -1
+  distill_mode: false
+  down_sample_amount: -1
+  ensemble_distill_mode: false
+  language_resample: false
+  optimizer: Adam
+  train_with_professor: false
+ner_dp:
+  Corpus: CONLL_03_SPANISH_DP
+  tag_dictionary: resources/taggers/ner_dp_with_none_wo_unk_tags.pkl
+
+embeddings:
+  FlairEmbeddings-1:
+    model: es-forward
+  FlairEmbeddings-2:
+    model: es-backward
+  FastWordEmbeddings:
+    additional_empty_embedding: false
+    embeddings: es
+    freeze: true
+  BertEmbeddings:
+    bert_model_or_path: bert-base-multilingual-cased
+    layers: '-1'
+    pooling_operation: mean
+  # FlairEmbeddings-1:
+  #   model: en-forward
+  # FlairEmbeddings-2:
+  #   model: en-backward
+  # XLMRoBERTaEmbeddings:
+  #   layers: '-1'
+  #   pooling_operation: mean
+# enhancedud:
+#   Corpus: UD_English
+is_teacher_list: false
+is_toy: false
+model:
+  SemanticDependencyParser:
+    binary: true
+    factorize: false
+    hidden_size: 200
+    rnn_layers: 3
+    lstm_dropout: 0.4
+    word_dropout: 0.5  # lexical_dropout
+    init_std: 0.25
+    interpolation: 0.1
+    iterations: 3
+    
+    mlp_dropout: 0.2
+    # n_mlp_arc: 500
+    n_mlp_rel: 150
+    # n_mlp_sec: 150
+    
+    diagonal: false
+    tree: false
+    use_cop: false
+    use_crf: false
+    use_gp: false
+    use_rnn: true
+    use_second_order: false
+    use_sib: false
+    
+model_name: conll03_bs3500_lr1e-3_epoch1k1_flair_fastword_bert_es
+target_dir: saves/conll_teachers
+targets: ner_dp
+teacher_annealing: false
+train:
+  best_k: 5
+  betas:
+  - 0.9
+  - 0.999
+  calc_teachers_target_loss: false
+  entropy_loss_rate: 0.001
+  fine_tune_mode: false
+  freezing: true
+  language_attention_entropy: false
+  language_attention_warmup: false
+  language_attention_warmup_and_fix: false
+  learning_rate: 0.001
+  lr_rate: 1
+  decay: 0.999
+  decay_steps: 100
+  max_epochs: 1100
+  max_epochs_without_improvement: 1100
+  # min_freq: 2
+  mini_batch_size: 3500
+  monitor_test: false
+  rootschedule: false
+  save_final_model: false
+  sort_data: false
+  train_language_attention_by_dev: false
+  train_with_dev: false
+  true_reshuffle: false
+  use_unlabeled_data: false
+  use_warmup: false
+trainer: ModelFinetuner

@@ -1,0 +1,48 @@
+ModelFinetuner_dp:
+  distill_mode: true
+  down_sample_amount: 3000
+  optimizer: SGD
+  sentence_level_batch: true
+  train_with_professor: false
+anneal_factor: 1
+embeddings:
+  FastCharacterEmbeddings:
+    char_cnn: true
+    char_embedding_dim: 25
+    hidden_size_char: 25
+  FastWordEmbeddings:
+    additional_empty_embedding: false
+    embeddings: es
+    freeze: true
+interpolation: 1
+is_teacher_list: true
+model:
+  FastSequenceTagger:
+    crf_attention: false
+    distill_dp: true
+    dropout: 0.0
+    hidden_size: 256
+    relearn_embeddings: true
+    sentence_loss: true
+    temperature: 2
+    use_crf: false
+model_name: wikiann_3k_kd_es
+ner:
+  Corpus: PANX-ES
+  tag_dictionary: resources/taggers/ner_tags.pkl
+  teachers:
+    saves/wikiann_teacher/wikiann_bs3500_lr1e-3_epoch1k1_flair_fastword_bert_panx_es.yaml: PANX-ES
+target_dir: saves/kd
+targets: ner
+teacher_annealing: true
+train:
+  learning_rate: 0.1
+  max_epochs: 300
+  mini_batch_size: 32
+  monitor_test: false
+  patience: 10
+  save_final_model: false
+  train_with_dev: false
+  true_reshuffle: false
+  use_unlabeled_data: true
+trainer: ModelFinetuner_dp
